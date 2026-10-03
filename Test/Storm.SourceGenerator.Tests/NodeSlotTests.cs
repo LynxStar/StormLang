@@ -27,24 +27,33 @@ public sealed class NodeSlotTests
     [InlineData("name:IDENT held:(COMMA Elem)?", "Name=name Held=Elem")]
     [InlineData("held:(inner:Elem)?", "Inner=inner Held=inner")]
     [InlineData("name:IDENT (COMMA inner:Elem)?", "Name=name Inner=inner Elem=inner")]
+    [InlineData("name:IDENT (inner:Elem)?", "Name=name Inner=inner Elem=inner")]
     public void EachPropertyIsFilledByTheElementItHolds(string shape, string filled)
     {
         var (alternative, names) = Alternative(shape);
 
         var slots = AstEmitter.NodeSlots(new RuleIR("Item", [alternative]), alternative, "ItemNode");
 
-        Assert.Equal(filled, string.Join(" ", slots.Select(slot => slot.Name + (slot.Appends ? "+=" : "=") + names[slot.Source])));
+        Assert.Equal(filled, string.Join(" ", slots.Select(slot => slot.Name + (slot.Appends ? "+=" : "=") + names.GetValueOrDefault(slot.Source, "group"))));
     }
 
-    [Fact]
-    public void ALaterUnnamedAlternativeFillsOnlyThePropertiesTheFirstDeclares()
+    [Theory]
+    [InlineData("name:IDENT Elem?", "name:IDENT held:(COMMA Elem)?", "Name=name")]
+    [InlineData("LT held:(COMMA inner:Elem)?", "GT held:(COMMA inner:Elem)?", "Inner=inner Held=inner")]
+    [InlineData("LT held:(COMMA inner:Elem)?", "GT held:(COMMA Elem)?", "")]
+    [InlineData("inner:Elem LT held:Elem?", "GT held:(COMMA inner:Elem)?", "Inner=inner")]
+    [InlineData("first:Elem (COMMA rest:Elem)* GT", "LT rest:Elem", "")]
+    [InlineData("rest:Elem GT", "LT (COMMA rest:Elem)+", "Rest=rest")]
+    [InlineData("LT held:(COMMA inner:Elem)?", "GT held:(COMMA other:Elem)?", "")]
+    [InlineData("LT held:(COMMA first:Elem second:Elem)?", "GT held:(COMMA first:Elem second:Elem)?", "Held=first Group0=group")]
+    public void ALaterUnnamedAlternativeFillsWhatTheFirstDeclaresInTheSameRole(string firstShape, string laterShape, string filled)
     {
-        var (first, _) = Alternative("name:IDENT Elem?");
-        var (later, names) = Alternative("name:IDENT held:(COMMA Elem)?");
+        var (first, _) = Alternative(firstShape);
+        var (later, names) = Alternative(laterShape);
 
         var slots = AstEmitter.NodeSlots(new RuleIR("Item", [first, later]), later, "ItemNode");
 
-        Assert.Equal("Name=name", string.Join(" ", slots.Select(slot => slot.Name + (slot.Appends ? "+=" : "=") + names[slot.Source])));
+        Assert.Equal(filled, string.Join(" ", slots.Select(slot => slot.Name + (slot.Appends ? "+=" : "=") + names.GetValueOrDefault(slot.Source, "group"))));
     }
 
     // Builds the shape directly: a label names its element, an unlabelled element is named after its token or rule.
@@ -103,6 +112,18 @@ public sealed class NodeSlotTests
             "name:IDENT held:(COMMA Elem)?" => new SequenceIR([token(Ident, "name"), labelled("held", new OptionalIR(new SequenceIR([token(Comma), reference()])))]),
             "held:(inner:Elem)?" => labelled("held", new OptionalIR(reference("inner"))),
             "name:IDENT (COMMA inner:Elem)?" => new SequenceIR([token(Ident, "name"), new OptionalIR(new SequenceIR([token(Comma), reference("inner")]))]),
+            "name:IDENT (inner:Elem)?" => new SequenceIR([token(Ident, "name"), new OptionalIR(reference("inner"))]),
+            "LT held:(COMMA inner:Elem)?" => new SequenceIR([token(Lt), labelled("held", new OptionalIR(new SequenceIR([token(Comma), reference("inner")])))]),
+            "GT held:(COMMA inner:Elem)?" => new SequenceIR([token(Gt), labelled("held", new OptionalIR(new SequenceIR([token(Comma), reference("inner")])))]),
+            "GT held:(COMMA Elem)?" => new SequenceIR([token(Gt), labelled("held", new OptionalIR(new SequenceIR([token(Comma), reference()])))]),
+            "inner:Elem LT held:Elem?" => new SequenceIR([reference("inner"), token(Lt), labelled("held", new OptionalIR(reference()))]),
+            "first:Elem (COMMA rest:Elem)* GT" => new SequenceIR([reference("first"), new ZeroOrMoreIR(new SequenceIR([token(Comma), reference("rest")])), token(Gt)]),
+            "LT rest:Elem" => new SequenceIR([token(Lt), reference("rest")]),
+            "GT held:(COMMA other:Elem)?" => new SequenceIR([token(Gt), labelled("held", new OptionalIR(new SequenceIR([token(Comma), reference("other")])))]),
+            "LT held:(COMMA first:Elem second:Elem)?" => new SequenceIR([token(Lt), labelled("held", new OptionalIR(new SequenceIR([token(Comma), reference("first"), reference("second")])))]),
+            "GT held:(COMMA first:Elem second:Elem)?" => new SequenceIR([token(Gt), labelled("held", new OptionalIR(new SequenceIR([token(Comma), reference("first"), reference("second")])))]),
+            "rest:Elem GT" => new SequenceIR([reference("rest"), token(Gt)]),
+            "LT (COMMA rest:Elem)+" => new SequenceIR([token(Lt), new OneOrMoreIR(new SequenceIR([token(Comma), reference("rest")]))]),
             _ => throw new ArgumentOutOfRangeException(nameof(shape), shape, null),
         };
 

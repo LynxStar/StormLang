@@ -285,16 +285,13 @@ public static partial class AstEmitter
     /// </summary>
     private static void EmitRuleNodeTypes(CodeWriter writer, RuleIR rule, EmissionContext context)
     {
-        var hasNamedAlternatives = rule.Alternatives.Any(a => a.AlternativeName != null)
-            || rule.Alternatives.Any(a => a.Expression is InlineBlockIR);
-
-        if(hasNamedAlternatives)
+        if(SharesFirstAlternativeNode(rule))
         {
-            EmitAbstractNodeWithSubtypes(writer, rule, context);
+            EmitSealedNode(writer, rule, context);
         }
         else
         {
-            EmitSealedNode(writer, rule, context);
+            EmitAbstractNodeWithSubtypes(writer, rule, context);
         }
     }
 
@@ -655,6 +652,12 @@ public static partial class AstEmitter
             property.MayBeAbsent = property.Source != null && skippable.Contains(property.Source);
         }
 
+        foreach(var alias in properties.Where(property => !property.IsChild && property.Source != null))
+        {
+            alias.Owner = properties.FirstOrDefault(property => property.IsChild && ReferenceEquals(property.Source, alias.Source))
+                ?? properties.FirstOrDefault(property => property.Group != null && property.Source is SequenceIR group && group.Elements.Contains(alias.Source!));
+        }
+
         return properties;
     }
 
@@ -975,7 +978,7 @@ public static partial class AstEmitter
             case RuleRefIR ruleRef:
                 {
                     var name = EnsureUnique(PascalCase(ruleRef.Rule.Name), usedNames);
-                    return new PropertyInfo(name, ruleRef.Rule.Name + "Node?", true, true, false, "").FilledBy(ruleRef, false);
+                    return new PropertyInfo(name, ruleRef.Rule.Name + "Node?", true, true, false, "").FilledBy(ruleRef, false, FindLabel(ruleRef, labels) == null);
                 }
             case SequenceIR seq:
                 {
@@ -983,8 +986,7 @@ public static partial class AstEmitter
                     if(seqRuleRef != null)
                     {
                         var name = EnsureUnique(PascalCase(seqRuleRef.Rule.Name), usedNames);
-                        var labelled = labels.Any(label => ReferenceEquals(label.Expression, seqRuleRef));
-                        return new PropertyInfo(name, seqRuleRef.Rule.Name + "Node?", true, true, false, "").FilledBy(seqRuleRef, false, !labelled);
+                        return new PropertyInfo(name, seqRuleRef.Rule.Name + "Node?", true, true, false, "").FilledBy(seqRuleRef, false, FindLabel(seqRuleRef, labels) == null);
                     }
 
                     var seqTokenRef = seq.Elements.OfType<TokenRefIR>().LastOrDefault();
@@ -1182,6 +1184,8 @@ public static partial class AstEmitter
         public bool IsChild { get; private set; } = true;
 
         public bool MayBeAbsent { get; set; }
+
+        public PropertyInfo? Owner { get; set; }
 
         public ExpressionIR? Source { get; private set; }
 

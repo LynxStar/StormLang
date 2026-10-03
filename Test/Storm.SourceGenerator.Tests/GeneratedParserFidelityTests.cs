@@ -40,7 +40,7 @@ public sealed class GeneratedParserFidelityTests
         "rule Held = name:IDENT held:(COMMA (SEMI | LP) inner:Elem RP)?;\n" +
         "rule Nested = first:Elem (LT (COMMA rest:Elem)* GT)?;\n" +
         "rule Pairs = head:IDENT (key:IDENT COMMA? value:IDENT)*;\n" +
-        "rule Nest = head:IDENT (key:IDENT (LT value:Elem GT)? SEMI)*;\n" +
+        "rule Nest = head:IDENT (key:IDENT (LT value:Elem mark:IDENT GT)? SEMI)*;\n" +
         "rule Parens = first:Elem (COMMA (LP Elem RP))*;\n" +
         "rule Stated = first:Elem (COMMA rest:Elem SEMI)*;\n" +
         "rule Head = first:IDENT LT;\n" +
@@ -105,19 +105,20 @@ public sealed class GeneratedParserFidelityTests
     [Fact]
     public void AGroupNestedInARepeatedGroupIsBuiltInEachRoundThatHoldsIt_AndItsNodeIsAChild()
     {
-        const string input = "a b<c>;d;";
+        const string input = "a b<c m>;d;";
         var node = Parse(PlainParser.Value, "Nest", input, out var position)!;
         var rounds = ((IEnumerable)node.GetType().GetProperty("Group0")!.GetValue(node)!).Cast<object>().Select(round =>
         {
             var nested = round.GetType().GetField("Group0")!.GetValue(round);
             var value = nested?.GetType().GetField("Value")!.GetValue(nested);
+            var mark = nested?.GetType().GetField("Mark")!.GetValue(nested);
 
-            return LexemeOf(round.GetType().GetField("Key")!.GetValue(round)) + ":" + (value == null ? "-" : TextOf(value, input));
+            return LexemeOf(round.GetType().GetField("Key")!.GetValue(round)) + ":" + (value == null ? "-" : TextOf(value, input) + "/" + LexemeOf(mark));
         });
         _ = node.GetType().GetMethod("SetParentLinks")!.Invoke(node, null);
         var children = ChildrenOf(node).ToList();
 
-        Assert.Equal((8, "b:c d:-"), (position, string.Join(" ", rounds)));
+        Assert.Equal((9, "b:c/m d:-"), (position, string.Join(" ", rounds)));
         Assert.Equal("c", string.Join(" ", children.Select(child => TextOf(child, input))));
         Assert.All(children, child => Assert.Same(node, child!.GetType().GetProperty("Parent")!.GetValue(child)));
     }

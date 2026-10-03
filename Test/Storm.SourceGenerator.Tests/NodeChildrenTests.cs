@@ -18,15 +18,16 @@ public sealed class NodeChildrenTests
     [InlineData("name:IDENT held:(COMMA Elem)?", "if (Held != null) { yield return Held; }")]
     [InlineData("held:(inner:Elem)?", "if (Inner != null) { yield return Inner; }")]
     [InlineData("name:IDENT (COMMA inner:Elem)?", "if (Inner != null) { yield return Inner; }")]
+    [InlineData("name:IDENT (inner:Elem)?", "if (Inner != null) { yield return Inner; }")]
     [InlineData("held:(COMMA inner:Elem)*", "foreach (var child in Held) { yield return child; }")]
     [InlineData("(COMMA held:(LT inner:Elem GT)?)*", "foreach (var child in Inner) { yield return child; }")]
     [InlineData("name:IDENT held:(COMMA first:Elem second:Elem)?", "if (Group0 != null) { yield return Group0.Value.First; yield return Group0.Value.Second; }")]
     [InlineData("name:IDENT held:(COMMA Elem second:Elem)?", "if (Group0 != null) { yield return Group0.Value.Elem; yield return Group0.Value.Second; }")]
     [InlineData("held:(COMMA first:Elem second:Elem)*", "foreach (var groupItem in Group0) { yield return groupItem.First; yield return groupItem.Second; }")]
-    [InlineData("name:IDENT held:(COMMA first:Elem rest:Elem*)?", "if (Group0 != null) { yield return Group0.Value.First; foreach (var child in Group0.Value.Rest) { yield return child; } }")]
-    [InlineData("(first:Elem more:Elem? rest:Elem*)*", "foreach (var groupItem in Group0) { yield return groupItem.First; if (groupItem.More != null) { yield return groupItem.More; } foreach (var child in groupItem.Rest) { yield return child; } }")]
+    [InlineData("name:IDENT held:(COMMA first:Elem rest:Elem*)?", "if (Group0 != null) { yield return Group0.Value.First; if (!Group0.Value.Rest.IsDefault) { foreach (var child in Group0.Value.Rest) { yield return child; } } }")]
+    [InlineData("(first:Elem more:Elem? rest:Elem*)*", "foreach (var groupItem in Group0) { yield return groupItem.First; if (groupItem.More != null) { yield return groupItem.More; } if (!groupItem.Rest.IsDefault) { foreach (var child in groupItem.Rest) { yield return child; } } }")]
     [InlineData("head:IDENT (key:IDENT (LT value:Elem GT)? SEMI)*", "foreach (var groupItem in Group0) { if (groupItem.Group0 != null) { yield return groupItem.Group0.Value.Value; } }")]
-    [InlineData("(first:Elem (COMMA rest:Elem)*)*", "foreach (var groupItem in Group0) { yield return groupItem.First; foreach (var groupItem1 in groupItem.Group0) { yield return groupItem1.Rest; } }")]
+    [InlineData("(first:Elem (COMMA rest:Elem)*)*", "foreach (var groupItem in Group0) { yield return groupItem.First; if (!groupItem.Group0.IsDefault) { foreach (var groupItem1 in groupItem.Group0) { yield return groupItem1.Rest; } } }")]
     [InlineData("head:Elem (key:IDENT COMMA? value:IDENT)*", "yield return Head;")]
     [InlineData("a:Elem COMMA | SEMI", "if (A != null) { yield return A; }")]
     [InlineData("a:Elem COMMA | a:Elem SEMI", "yield return A;")]
@@ -70,6 +71,7 @@ public sealed class NodeChildrenTests
             "name:IDENT held:(COMMA Elem)?" => new SequenceIR([token(Ident, "name"), labelled("held", new OptionalIR(new SequenceIR([token(Comma), reference()])))]),
             "held:(inner:Elem)?" => labelled("held", new OptionalIR(reference("inner"))),
             "name:IDENT (COMMA inner:Elem)?" => new SequenceIR([token(Ident, "name"), new OptionalIR(new SequenceIR([token(Comma), reference("inner")]))]),
+            "name:IDENT (inner:Elem)?" => new SequenceIR([token(Ident, "name"), new OptionalIR(reference("inner"))]),
             "held:(COMMA inner:Elem)*" => labelled("held", new ZeroOrMoreIR(new SequenceIR([token(Comma), reference("inner")]))),
             "(COMMA held:(LT inner:Elem GT)?)*" => new ZeroOrMoreIR(new SequenceIR(
             [
