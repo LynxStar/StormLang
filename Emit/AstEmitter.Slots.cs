@@ -16,55 +16,83 @@ public static partial class AstEmitter
             .ToList();
     }
 
+    private sealed record NodeShape(RuleAlternativeIR Alternative, List<PropertyInfo> Properties);
+
     private static IEnumerable<PropertyInfo> FilledProperties(RuleIR rule, RuleAlternativeIR alternative, string nodeTypeName)
     {
-        var filled = CollectProperties(alternative, nodeTypeName, false, out _, out _).Where(property => property.Source != null);
-        if(!SharesFirstAlternativeNode(rule) || alternative == rule.Alternatives[0])
-        {
-            return filled;
-        }
+        var shape = HasSharedAlternativeNode(rule) && rule.Alternatives.Contains(alternative)
+            ? CollectNodeShapes(rule, nodeTypeName, false, out _, out _).First(candidate => candidate.Alternative == alternative).Properties
+            : CollectProperties(alternative, nodeTypeName, false, out _, out _);
 
-        var declared = CollectProperties(rule.Alternatives[0], nodeTypeName, false, out _, out _).ToDictionary(Key);
-
-        return filled.Where(property => declared.TryGetValue(Key(property), out var first) && FillsOnce(property, first, declared));
+        return shape.Where(property => property.Source != null);
     }
 
-    // Children() is the first alternative's, so a later one fills a property only where the node stays yielded once: one
-    // of the first's children, unless the later alternative's own owner of that node fills a child too, and a forwarding
-    // label only beside the owner it forwards there, since a forwarding label alone holds a node nothing yields.
-    private static bool FillsOnce(PropertyInfo later, PropertyInfo first, Dictionary<(string Name, string TypeName), PropertyInfo> declared)
-    {
-        if(first.IsChild)
-        {
-            return later.IsChild || later.Owner == null || !declared.TryGetValue(Key(later.Owner), out var owner) || !owner.IsChild;
-        }
-
-        return !later.IsChild && later.Owner != null && first.Owner != null && Key(later.Owner) == Key(first.Owner);
-    }
-
-    private static (string Name, string TypeName) Key(PropertyInfo property)
-    {
-        return (property.Name, property.TypeName);
-    }
-
-    private static bool SharesFirstAlternativeNode(RuleIR rule)
+    private static bool HasSharedAlternativeNode(RuleIR rule)
     {
         return !rule.Alternatives.Any(candidate => candidate.AlternativeName != null || candidate.Expression is InlineBlockIR);
     }
 
-    private static void GuardWhatLaterAlternativesLeaveUnset(RuleIR rule, string nodeTypeName, List<PropertyInfo> properties)
+    // Declaration names are shared where their types and group shapes agree; each alternative keeps its own ordered
+    // ownership plan so a forwarding label can be an owner in another alternative without yielding either node twice.
+    private static List<NodeShape> CollectNodeShapes(RuleIR rule, string nodeTypeName, bool emitObsoleteShims, out List<GroupStructModel> groupStructs, out List<ObsoleteShim> shims)
     {
-        foreach(var alternative in rule.Alternatives.Skip(1))
+        var shapes = new List<NodeShape>();
+        var declarations = new Dictionary<(string Name, string TypeName), PropertyInfo>();
+        var usedNames = new HashSet<string>();
+        var groupNames = new Dictionary<(int Index, string Shape), string>();
+        var allGroups = new List<GroupStructModel>();
+        var allShims = new List<ObsoleteShim>();
+        groupStructs = allGroups;
+        shims = allShims;
+        for(var index = 0; index < rule.Alternatives.Count; index++)
         {
-            var certain = new HashSet<(string Name, string TypeName)>(FilledProperties(rule, alternative, nodeTypeName)
-                .Where(property => !property.MayBeAbsent)
-                .Select(Key));
-
-            foreach(var property in properties.Where(property => property.IsNodeType && !property.IsList && !property.IsNullable && !certain.Contains(Key(property))))
+            string nameOf(AnonymousGroupInfo group)
             {
-                property.MayBeAbsent = true;
+                var key = (group.GroupIndex, GroupShape(group.Sequence, group.Labels));
+                if(!groupNames.TryGetValue(key, out var name))
+                {
+                    name = "Group" + group.GroupIndex;
+                    if(groupNames.Values.Contains(name))
+                    {
+                        name += "Alternative" + (index + 1);
+                    }
+
+                    groupNames[key] = name;
+                }
+
+                return name;
             }
+
+            var alternative = rule.Alternatives[index];
+            var properties = CollectProperties(alternative, nodeTypeName, emitObsoleteShims, out var groups, out var aliases, nameOf);
+            foreach(var property in properties)
+            {
+                var key = (property.Name, property.TypeName);
+                if(!declarations.TryGetValue(key, out var declared))
+                {
+                    property.Name = EnsureUnique(property.Name, usedNames);
+                    declarations[key] = property;
+                }
+                else
+                {
+                    property.Name = declared.Name;
+                }
+            }
+
+            allGroups.AddRange(groups.Where(group => !allGroups.Any(existing => existing.StructName == group.StructName)));
+            allShims.AddRange(aliases.Where(alias => !allShims.Any(existing => existing.PropertyName == alias.PropertyName) && !usedNames.Contains(alias.PropertyName)));
+            shapes.Add(new NodeShape(alternative, properties));
         }
+
+        _ = allShims.RemoveAll(alias => usedNames.Contains(alias.PropertyName));
+        return shapes;
+    }
+
+    private static string GroupShape(SequenceIR sequence, IReadOnlyList<FieldLabelIR> labels)
+    {
+        return string.Join(";", GetGroupStructFields("", sequence, labels).Select(field => field.Kind == GroupFieldKind.NestedGroup
+            ? field.FieldName + ":" + field.NestedModifier + "(" + GroupShape(field.NestedSequence!, labels) + ")"
+            : field.FieldName + ":" + field.FieldType));
     }
 
     internal static ExpressionIR? Representative(ExpressionIR labelled, ICollection<ExpressionIR> groupSequences)

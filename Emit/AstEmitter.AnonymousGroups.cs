@@ -383,13 +383,14 @@ public static partial class AstEmitter
         List<GroupStructModel> groupStructs,
         List<ObsoleteShim> shims,
         bool emitObsoleteShims,
-        HashSet<string> usedNames)
+        HashSet<string> usedNames,
+        string? groupName = null)
     {
-        var structName = nodeTypeName + "Group" + group.GroupIndex;
+        var structName = nodeTypeName + (groupName ?? "Group" + group.GroupIndex);
         var model = BuildGroupStruct(structName, group.Sequence, group.Labels);
         groupStructs.Add(model);
 
-        var groupPropName = EnsureUnique("Group" + group.GroupIndex, usedNames);
+        var groupPropName = EnsureUnique(groupName ?? "Group" + group.GroupIndex, usedNames);
         properties.Add(GroupPropertyForModifier(groupPropName, model, group.Modifier)
             .FilledBy(group.Sequence, group.Modifier is GroupModifier.ZeroOrMore or GroupModifier.OneOrMore));
 

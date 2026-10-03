@@ -1,11 +1,60 @@
 using System;
 using System.Collections.Generic;
 using System.Linq;
+using Storm.SourceGenerator.IR;
 
 namespace Storm.SourceGenerator.Emit;
 
 public static partial class AstEmitter
 {
+    private static void CaptureOrder(ExpressionIR expression, Dictionary<ExpressionIR, int> order)
+    {
+        if(order.ContainsKey(expression))
+        {
+            return;
+        }
+
+        order[expression] = order.Count;
+        var children = expression switch
+        {
+            SequenceIR sequence => sequence.Elements,
+            AlternationIR alternation => alternation.Alternatives,
+            OptionalIR optional => new[] { optional.Inner },
+            ZeroOrMoreIR repeated => new[] { repeated.Inner },
+            OneOrMoreIR repeated => new[] { repeated.Inner },
+            _ => Array.Empty<ExpressionIR>(),
+        };
+        foreach(var child in children)
+        {
+            CaptureOrder(child, order);
+        }
+    }
+
+    private static void EmitAlternativeChildren(CodeWriter writer, List<NodeShape> shapes)
+    {
+        if(shapes.Count == 1)
+        {
+            EmitChildrenOverride(writer, shapes[0].Properties);
+            return;
+        }
+
+        writer.WriteBlock("public override IEnumerable<SyntaxNode> Children()", () => writer.WriteBlock("switch (__StormAlternative)", () =>
+            {
+                for(var index = 0; index < shapes.Count; index++)
+                {
+                    writer.WriteLine($"case {index}:");
+                    writer.Indent();
+                    foreach(var property in shapes[index].Properties.Where(property => property.IsChild))
+                    {
+                        _ = EmitYields(writer, property.Name, property.IsNodeType, property.IsList, property.IsNullable || property.MayBeAbsent, property.Group, 0, false);
+                    }
+
+                    writer.WriteLine("yield break;");
+                    writer.Dedent();
+                }
+            }));
+    }
+
     private static void EmitChildrenOverride(CodeWriter writer, List<PropertyInfo> properties)
     {
         writer.WriteBlock("public override IEnumerable<SyntaxNode> Children()", () =>

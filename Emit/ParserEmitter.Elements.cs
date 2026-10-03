@@ -66,7 +66,7 @@ public static partial class ParserEmitter
 
         public List<Slot> Slots { get; } = new();
 
-        public Dictionary<SequenceIR, GroupPlan> Groups { get; } = new();
+        public Dictionary<SequenceIR, List<GroupPlan>> Groups { get; } = new();
 
         public void Feed(ExpressionIR source, Slot slot, bool appends)
         {
@@ -85,7 +85,7 @@ public static partial class ParserEmitter
             return parent == null ? own : own.Concat(parent.FeedsOf(source));
         }
 
-        public bool TryGroup(ExpressionIR expr, out SequenceIR sequence, out GroupPlan plan)
+        public bool TryGroup(ExpressionIR expr, out SequenceIR sequence, out IReadOnlyList<GroupPlan> plans)
         {
             var inner = expr switch
             {
@@ -98,12 +98,12 @@ public static partial class ParserEmitter
             if(inner is SequenceIR candidate && Groups.TryGetValue(candidate, out var found))
             {
                 sequence = candidate;
-                plan = found;
+                plans = found;
                 return true;
             }
 
             sequence = null!;
-            plan = null!;
+            plans = null!;
             return false;
         }
     }
@@ -126,8 +126,12 @@ public static partial class ParserEmitter
             var groupLocals = new Dictionary<SequenceIR, string>();
             foreach(var group in AstEmitter.DetectAnonymousGroups(alternative))
             {
-                var structName = nodeTypeName + "Group" + group.GroupIndex;
-                frame.Groups[group.Sequence] = new GroupPlan(structName, structName, "_g" + group.GroupIndex, group.Sequence, group.Labels);
+                var groupSlot = slots.FirstOrDefault(slot => ReferenceEquals(slot.Source, group.Sequence));
+                var structName = groupSlot.Source == null ? nodeTypeName + "Group" + group.GroupIndex
+                    : groupSlot.TypeName.StartsWith("ImmutableArray<", StringComparison.Ordinal)
+                        ? groupSlot.TypeName.Substring(15, groupSlot.TypeName.Length - 16)
+                        : groupSlot.TypeName.TrimEnd('?');
+                frame.Groups[group.Sequence] = [new GroupPlan(structName, structName, "_g" + group.GroupIndex, group.Sequence, group.Labels)];
                 groupLocals[group.Sequence] = "_group" + group.GroupIndex;
             }
 
@@ -166,9 +170,9 @@ public static partial class ParserEmitter
 
         public void Element(ExpressionIR expr, string ok, Frame frame)
         {
-            if(frame.TryGroup(expr, out var groupSequence, out var plan))
+            if(frame.TryGroup(expr, out var groupSequence, out var plans))
             {
-                Group(expr, groupSequence, plan, ok, frame);
+                Group(expr, groupSequence, plans, ok, frame);
                 return;
             }
 
@@ -300,16 +304,16 @@ public static partial class ParserEmitter
             }
         }
 
-        private void Group(ExpressionIR wrapper, SequenceIR sequence, GroupPlan plan, string ok, Frame frame)
+        private void Group(ExpressionIR wrapper, SequenceIR sequence, IReadOnlyList<GroupPlan> plans, string ok, Frame frame)
         {
-            var groupOk = plan.Prefix + "Ok";
+            var groupOk = plans[0].Prefix + "Ok";
             if(wrapper is OptionalIR)
             {
                 writer.WriteBlock($"if ({ok})", () =>
                 {
                     var attempt = Save(Fed(sequence.Elements, frame));
                     writer.WriteLine($"var {groupOk} = true;");
-                    var value = GroupBody(sequence, plan, groupOk, frame);
+                    var value = GroupBody(sequence, plans, groupOk, frame);
                     writer.WriteBlock($"if ({groupOk} && !_hasError)", () => StoreGroup(sequence, value, frame));
                     writer.WriteBlock($"if (!{groupOk} || _hasError)", () => Restore(attempt));
                 });
@@ -327,7 +331,7 @@ public static partial class ParserEmitter
             {
                 var round = Save(Fed(sequence.Elements, frame));
                 writer.WriteLine($"var {groupOk} = true;");
-                var value = GroupBody(sequence, plan, groupOk, frame);
+                var value = GroupBody(sequence, plans, groupOk, frame);
                 writer.WriteBlock($"if (!{groupOk} || _hasError || _pos == {round.Position})", () =>
                 {
                     Restore(round);
@@ -347,34 +351,47 @@ public static partial class ParserEmitter
             }
         }
 
-        private string GroupBody(SequenceIR sequence, GroupPlan plan, string groupOk, Frame parent)
+        private IReadOnlyList<(string TypeName, string Value)> GroupBody(SequenceIR sequence, IReadOnlyList<GroupPlan> plans, string groupOk, Frame parent)
         {
             var frame = new Frame(parent);
-            foreach(var field in plan.Fields)
+            var projections = new List<(GroupPlan Plan, List<Slot> Slots)>();
+            foreach(var plan in plans)
             {
-                var nestedStructName = field.Kind == GroupFieldKind.NestedGroup ? plan.StructName + "." + field.NestedStructName : null;
-                var fieldType = nestedStructName == null ? field.FieldType : field.FieldType.Replace(field.NestedStructName!, nestedStructName);
-                var slot = new Slot(field.FieldName, plan.Prefix + "_" + LowerFirst(field.FieldName), fieldType, "_b");
-                writer.WriteLine(slot.Declaration);
-                frame.Slots.Add(slot);
-                switch(field.Kind)
+                var projected = new List<Slot>();
+                projections.Add((plan, projected));
+                foreach(var field in plan.Fields)
                 {
-                    case GroupFieldKind.NestedGroup:
-                        frame.Groups[field.NestedSequence!] = new GroupPlan(field.NestedStructName!, nestedStructName!, slot.Local, field.NestedSequence!, plan.Labels);
-                        frame.Feed(field.NestedSequence!, slot, slot.Builder != null);
-                        break;
+                    var nestedStructName = field.Kind == GroupFieldKind.NestedGroup ? plan.StructName + "." + field.NestedStructName : null;
+                    var fieldType = nestedStructName == null ? field.FieldType : field.FieldType.Replace(field.NestedStructName!, nestedStructName);
+                    var slot = new Slot(field.FieldName, plan.Prefix + "_" + LowerFirst(field.FieldName), fieldType, "_b");
+                    writer.WriteLine(slot.Declaration);
+                    frame.Slots.Add(slot);
+                    projected.Add(slot);
+                    switch(field.Kind)
+                    {
+                        case GroupFieldKind.NestedGroup:
+                            if(!frame.Groups.TryGetValue(field.NestedSequence!, out var nestedPlans))
+                            {
+                                nestedPlans = new List<GroupPlan>();
+                                frame.Groups[field.NestedSequence!] = nestedPlans;
+                            }
 
-                    case GroupFieldKind.Other:
-                        if(AstEmitter.Representative(field.Element, Array.Empty<ExpressionIR>()) is { } source)
-                        {
-                            frame.Feed(source, slot, slot.Builder != null);
-                        }
+                            nestedPlans.Add(new GroupPlan(field.NestedStructName!, nestedStructName!, slot.Local, field.NestedSequence!, plan.Labels));
+                            frame.Feed(field.NestedSequence!, slot, slot.Builder != null);
+                            break;
 
-                        break;
+                        case GroupFieldKind.Other:
+                            if(AstEmitter.Representative(field.Element, Array.Empty<ExpressionIR>()) is { } source)
+                            {
+                                frame.Feed(source, slot, slot.Builder != null);
+                            }
 
-                    default:
-                        frame.Feed(field.Element, slot, false);
-                        break;
+                            break;
+
+                        default:
+                            frame.Feed(field.Element, slot, false);
+                            break;
+                    }
                 }
             }
 
@@ -383,14 +400,16 @@ public static partial class ParserEmitter
                 Element(element, groupOk, frame);
             }
 
-            var fields = string.Join(", ", frame.Slots.Select(slot => $"{slot.Target} = {slot.Value}"));
-            return $"new {plan.StructName} {{ {fields} }}";
+            return projections.Select(projection => (projection.Plan.StructName,
+                "new " + projection.Plan.StructName + " { " + string.Join(", ", projection.Slots.Select(slot => $"{slot.Target} = {slot.Value}")) + " }")).ToList();
         }
 
-        private void StoreGroup(SequenceIR sequence, string value, Frame frame)
+        private void StoreGroup(SequenceIR sequence, IReadOnlyList<(string TypeName, string Value)> values, Frame frame)
         {
             foreach(var feed in frame.FeedsOf(sequence))
             {
+                var typeName = feed.Slot.ElementType ?? feed.Slot.TypeName.TrimEnd('?');
+                var value = values.First(projection => projection.TypeName == typeName).Value;
                 Store(feed, value);
             }
         }

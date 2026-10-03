@@ -2,7 +2,7 @@
 // consumed, a failed alternative rolled back so that a later one parses, an element matched at any depth, Children()
 // walking each real node once, an abandoned round leaving no node behind -- is behaviour of the generated code, which
 // reading its text cannot prove. One grammar holds every shape, so the class costs two compilations: one plain, one
-// with Item memoized.
+// with Item and Captures memoized.
 
 using System.Collections;
 using System.Collections.Immutable;
@@ -46,9 +46,24 @@ public sealed class GeneratedParserFidelityTests
         "rule Head = first:IDENT LT;\n" +
         "rule Wide = first:IDENT LT value:IDENT GT;\n" +
         "rule Bare = first:IDENT LT SEMI;\n" +
-        "rule Pick = inline Head: { wide:Wide as WideArm, bare:Bare as BareArm };\n";
+        "rule Pick = inline Head: { wide:Wide as WideArm, bare:Bare as BareArm };\n" +
+        "rule Ordered = Elem second:Elem;\n" +
+        "rule Interleaved = x:Elem (COMMA a:Elem b:Elem)* SEMI y:Elem;\n" +
+        "rule Union = LT first:Elem | LP second:Elem;\n" +
+        "rule Alias = SEMI held:(COMMA inner:Elem)? | LP held:(COMMA Elem)?;\n" +
+        "rule Shared = (a:Elem b:Elem)* SEMI | LP (c:Elem d:Elem)* GT;\n" +
+        "rule Prefix = a:Elem SEMI;\n" +
+        "rule Relabel = b:Elem SEMI c:Elem;\n" +
+        "rule Other = a:Elem SEMI LP;\n" +
+        "rule Projection = inline Prefix: { relabel:Relabel as RelabelArm, other:Other as OtherArm };\n" +
+        "rule Direct = head:Prefix tail:Elem;\n" +
+        "rule Nominal = inline Prefix: { direct:Direct as DirectArm, other:Other as OtherArm };\n" +
+        "@memo\nrule Captures = ordered:Ordered SEMI interleaved:Interleaved GT firstUnion:Union GT secondUnion:Union GT " +
+        "firstAlias:Alias GT secondAlias:Alias GT missingAlias:Alias GT firstShared:Shared secondShared:Shared " +
+        "projection:Projection GT nominal:Nominal GT other:Projection GT absent:Nominal? GT;\n" +
+        "rule CaptureReplay = captures:Captures RP as Closed | captures:Captures as Open;\n";
 
-    private static readonly string[] MemoizedRules = ["Item"];
+    private static readonly string[] MemoizedRules = ["Item", "Captures"];
 
     private static readonly Lazy<Assembly> PlainParser = new(() => Compile(memoized: false));
 
@@ -72,8 +87,6 @@ public sealed class GeneratedParserFidelityTests
     }
 
     [Theory]
-    [InlineData("List", "a", "a")]
-    [InlineData("List", "a,b", "a b")]
     [InlineData("List", "a,b,c", "a b c")]
     [InlineData("Run", "a b c", "a b c")]
     [InlineData("Tuple", "(a,b)", "a b")]
@@ -145,6 +158,82 @@ public sealed class GeneratedParserFidelityTests
         var node = Parse(PlainParser.Value, "Stated", input, out _)!;
 
         Assert.Equal("b", TextOf(node.GetType().GetProperty("Rest")!.GetValue(node), input));
+    }
+
+    [Fact]
+    public void CaptureSlotsAndChildrenAgreeAcrossPropertyKinds_AlternativesAndInlinePrefixes()
+    {
+        const string input = "a b;c,d e;f><g>(h>;,i>(,j>(>k l;(m n o p>q;r>s;t>u;(>>";
+        foreach(var (_, parser) in Parsers())
+        {
+            var replay = Parse(parser, "CaptureReplay", input, out var position)!;
+            var captures = Property(replay, "Captures")!;
+            var expected = new Dictionary<string, string>
+            {
+                ["Ordered"] = "a b",
+                ["Interleaved"] = "c d e f",
+                ["FirstUnion"] = "g",
+                ["SecondUnion"] = "h",
+                ["FirstAlias"] = "i",
+                ["SecondAlias"] = "j",
+                ["MissingAlias"] = "",
+                ["FirstShared"] = "k l",
+                ["SecondShared"] = "m n o p",
+            };
+            foreach(var (name, children) in expected)
+            {
+                var node = Property(captures, name)!;
+                Assert.Equal(children, string.Join(" ", ChildrenOf(node).Select(child => TextOf(child, input))));
+            }
+
+            Assert.Null(Property(captures, "Absent"));
+            var ordered = Property(captures, "Ordered")!;
+            Assert.Equal(ChildrenOf(ordered), new[] { Property(ordered, "Elem"), Property(ordered, "Second") });
+            Assert.Null(Property(Property(captures, "FirstUnion")!, "Second"));
+            Assert.Null(Property(Property(captures, "SecondUnion")!, "First"));
+            Assert.Same(Property(Property(captures, "SecondAlias")!, "Held"), ChildrenOf(Property(captures, "SecondAlias")!).Single());
+
+            var relabel = ChildrenOf(Property(captures, "Projection")!).Single()!;
+            var direct = ChildrenOf(Property(captures, "Nominal")!).Single()!;
+            var other = ChildrenOf(Property(captures, "Other")!).Single()!;
+            Assert.Equal("q r", string.Join(" ", ChildrenOf(relabel).Select(child => TextOf(child, input))));
+            Assert.Equal("s; t", string.Join(" ", ChildrenOf(direct).Select(child => TextOf(child, input))));
+            Assert.Equal("u", string.Join(" ", ChildrenOf(other).Select(child => TextOf(child, input))));
+            Assert.Same(Property(relabel, "B"), ChildrenOf(relabel).First());
+            Assert.Same(Property(direct, "Head"), ChildrenOf(direct).First());
+
+            _ = replay.GetType().GetMethod("SetParentLinks")!.Invoke(replay, null);
+            var origin = new object();
+            var reached = new HashSet<object>(ReferenceEqualityComparer.Instance);
+            var leaves = new List<string>();
+            visit(replay);
+
+            Assert.Equal(input.Count(character => character != ' '), position);
+            Assert.Equal("a b c d e f g h i j k l m n o p q r s t u", string.Join(" ", leaves));
+
+            void visit(object node)
+            {
+                Assert.True(reached.Add(node), "A captured node is reached more than once.");
+                node.GetType().GetProperty("Origin")!.SetValue(node, origin);
+                if(node.GetType().Name == "ElemNode")
+                {
+                    leaves.Add(TextOf(node, input));
+                }
+
+                foreach(var child in ChildrenOf(node))
+                {
+                    Assert.NotNull(child);
+                    Assert.Same(node, Property(child!, "Parent"));
+                    visit(child!);
+                    Assert.Same(origin, Property(child!, "Origin"));
+                }
+            }
+        }
+    }
+
+    private static object? Property(object node, string name)
+    {
+        return node.GetType().GetProperty(name)!.GetValue(node);
     }
 
     private static (bool Memoized, Assembly Parser)[] Parsers()

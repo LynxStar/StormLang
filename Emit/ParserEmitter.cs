@@ -353,6 +353,11 @@ public static partial class ParserEmitter
         writer.WriteBlock($"if ({okVar} && !_hasError)", () =>
         {
             writer.WriteLine($"var node = new {typeName}();");
+            if(rule.Alternatives.Count > 1 && rule.Alternatives.All(candidate => candidate.AlternativeName == null && candidate.Expression is not InlineBlockIR))
+            {
+                writer.WriteLine($"node.__StormAlternative = {rule.Alternatives.ToList().IndexOf(alt)};");
+            }
+
             foreach(var slot in frame.Slots)
             {
                 writer.WriteLine($"node.{slot.Target} = {slot.Local};");
@@ -369,25 +374,30 @@ public static partial class ParserEmitter
         var elements = new ElementWriter(writer, context);
         var armSlots = inlineBlock.Arms
             .Where(arm => arm.TailExpression is not InlineBlockIR)
-            .ToDictionary(arm => arm, arm => AstEmitter.NodeSlots(arm.TargetRule, ArmAlternative(inlineBlock, arm), arm.TargetRule.Name + "Node"));
+            .ToDictionary(arm => arm, arm => ProjectInlineArm(inlineBlock, arm));
         var prefixSources = Reachable(inlineBlock.PrefixElements);
-        var prefixSlots = armSlots.Values
-            .SelectMany(slots => slots)
-            .Where(slot => prefixSources.Contains(slot.Source))
-            .GroupBy(slot => (slot.Source, slot.Appends))
-            .Select(group => group.First())
-            .ToList();
+        var prefixProjection = ProjectInlinePrefix(inlineBlock);
+        var prefixFrame = elements.DeclareNode(prefixProjection.Slots, prefixProjection.Alternative, inlineBlock.PrefixRule.Name + "Node");
+        var prefixFrames = new List<Frame> { prefixFrame };
+        var prefixSlots = prefixProjection.Slots.ToList();
+        foreach(var arm in armSlots)
+        {
+            var captures = arm.Value.Slots.Where(slot => prefixSources.Contains(slot.Source)).ToList();
+            var taken = prefixFrames.SelectMany(frame => frame.Slots).SelectMany(slot => new[] { slot.Local, slot.Builder }).OfType<string>();
+            prefixFrames.Add(elements.DeclareNode(captures, arm.Value.Alternative, arm.Key.TargetRule.Name + "Node", taken));
+            prefixSlots.AddRange(captures);
+        }
 
         writer.WriteLine("var _inlineOk = true;");
-        var prefixAlternative = new RuleAlternativeIR(null, inlineBlock.PrefixLabels, new SequenceIR(inlineBlock.PrefixElements));
-        var prefixTypeName = armSlots.Keys.Select(arm => arm.TargetRule.Name + "Node").FirstOrDefault() ?? ruleName + "Node";
-        var prefix = new InlinePrefix(prefixSlots, elements.DeclareNode(prefixSlots, prefixAlternative, prefixTypeName));
+        var prefix = new InlinePrefix(prefixSlots, MergeInlineFrames(prefixFrames, prefixSources), prefixProjection.Slots, prefixFrame);
         foreach(var prefixElem in inlineBlock.PrefixElements)
         {
             elements.Element(prefixElem, "_inlineOk", prefix.Frame);
         }
 
         elements.FinishLists(prefix.Frame);
+        writer.WriteLine("var _inlinePrefixEnd = _pos;");
+        writer.WriteLine($"var _inlinePrefixSpan = Span({spVar});");
 
         writer.WriteBlock("if (_inlineOk && !_hasError)", () =>
         {
@@ -459,13 +469,13 @@ public static partial class ParserEmitter
         });
     }
 
-    private sealed record InlinePrefix(IReadOnlyList<NodeSlot> Slots, Frame Frame)
+    private sealed record InlinePrefix(IReadOnlyList<NodeSlot> Slots, Frame Frame, IReadOnlyList<NodeSlot> NodeSlots, Frame NodeFrame)
     {
         public string? LocalOf(NodeSlot slot)
         {
             for(var i = 0; i < Slots.Count; i++)
             {
-                if(Slots[i].Source == slot.Source && Slots[i].Appends == slot.Appends)
+                if(Slots[i].Source == slot.Source && Slots[i].TypeName == slot.TypeName && Slots[i].Appends == slot.Appends)
                 {
                     return Frame.Slots[i].Local;
                 }
@@ -473,13 +483,6 @@ public static partial class ParserEmitter
 
             return null;
         }
-    }
-
-    private static RuleAlternativeIR ArmAlternative(InlineBlockIR inlineBlock, InlineArmIR arm)
-    {
-        var tail = arm.TailExpression is SequenceIR sequence ? sequence.Elements : [arm.TailExpression];
-
-        return new RuleAlternativeIR(null, inlineBlock.PrefixLabels.Concat(arm.TailLabels).ToList(), new SequenceIR(inlineBlock.PrefixElements.Concat(tail).ToList()));
     }
 
     private static HashSet<ExpressionIR> Reachable(IEnumerable<ExpressionIR> roots)
@@ -554,7 +557,7 @@ public static partial class ParserEmitter
     private static void EmitArmGroup(
         CodeWriter writer, EmissionContext context, InlineBlockIR inlineBlock,
         List<int> armIndices, ElementWriter elements, InlinePrefix prefix,
-        Dictionary<InlineArmIR, IReadOnlyList<NodeSlot>> armSlots,
+        Dictionary<InlineArmIR, InlineArmProjection> armSlots,
         string ruleName, string spVar, bool hasNamedAlts)
     {
         if(armIndices.Count == 1)
@@ -592,7 +595,7 @@ public static partial class ParserEmitter
     private static void EmitArmTailParse(
         CodeWriter writer, EmissionContext context, InlineBlockIR inlineBlock, InlineArmIR arm,
         ElementWriter elements, InlinePrefix prefix,
-        Dictionary<InlineArmIR, IReadOnlyList<NodeSlot>> armSlots,
+        Dictionary<InlineArmIR, InlineArmProjection> armSlots,
         string ruleName, string spVar, bool hasNamedAlts)
     {
         if(arm.TailExpression is InlineBlockIR nestedBlock)
@@ -605,21 +608,34 @@ public static partial class ParserEmitter
         var innerTypeName = arm.TargetRule.Name + "Node";
         var armPropName = PascalCase(arm.Label ?? arm.TargetRule.Name);
 
-        var slots = armSlots[arm];
-        var tailSlots = slots.Where(slot => prefix.LocalOf(slot) == null).ToList();
+        var projection = armSlots[arm];
+        var slots = projection.Slots;
+        var tailSlots = slots.Where(slot => prefix.LocalOf(slot) == null && slot.Source != projection.PrefixReference).ToList();
         var prefixLocals = prefix.Frame.Slots.SelectMany(slot => new[] { slot.Local, slot.Builder }).OfType<string>();
 
         writer.WriteLine("var _tailOk = true;");
-        var tail = elements.DeclareNode(tailSlots, ArmAlternative(inlineBlock, arm), innerTypeName, prefixLocals);
+        var tail = elements.DeclareNode(tailSlots, projection.Alternative, innerTypeName, prefixLocals);
         elements.Element(arm.TailExpression, "_tailOk", tail);
         elements.FinishLists(tail);
 
         writer.WriteBlock("if (_tailOk && !_hasError)", () =>
         {
+            if(projection.PrefixReference != null)
+            {
+                writer.WriteLine($"var _prefixNode = new {inlineBlock.PrefixRule.Name}Node();");
+                for(var i = 0; i < prefix.NodeSlots.Count; i++)
+                {
+                    writer.WriteLine($"_prefixNode.{prefix.NodeSlots[i].Name} = {prefix.NodeFrame.Slots[i].Local};");
+                }
+
+                writer.WriteLine("_prefixNode.Span = _inlinePrefixSpan;");
+                writer.WriteLine($"_prefixNode = AttachHidden(_prefixNode, {spVar}, _inlinePrefixEnd);");
+            }
+
             writer.WriteLine($"var _inner = new {innerTypeName}();");
             foreach(var slot in slots)
             {
-                var local = prefix.LocalOf(slot) ?? tail.Slots[tailSlots.IndexOf(slot)].Local;
+                var local = slot.Source == projection.PrefixReference ? "_prefixNode" : prefix.LocalOf(slot) ?? tail.Slots[tailSlots.IndexOf(slot)].Local;
                 writer.WriteLine($"_inner.{slot.Name} = {local};");
             }
 

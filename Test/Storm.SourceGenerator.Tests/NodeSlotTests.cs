@@ -19,10 +19,10 @@ public sealed class NodeSlotTests
     [Theory]
     [InlineData("name:IDENT Elem?", "Name=name Elem=Elem")]
     [InlineData("name:IDENT (COMMA Elem)?", "Name=name Elem=Elem")]
-    [InlineData("first:Elem (LT (COMMA rest:Elem)* GT)?", "First=first Rest=rest GT=GT Elems+=rest")]
+    [InlineData("first:Elem (LT (COMMA rest:Elem)* GT)?", "First=first Rest=rest Elems+=rest GT=GT")]
     [InlineData("first:Elem (COMMA Elem?)*", "First=first COMMAs+=COMMA Elems+=Elem")]
     [InlineData("first:Elem (COMMA (LT Elem GT))*", "First=first COMMAs+=COMMA Elems+=Elem")]
-    [InlineData("first:Elem (COMMA more:Elem?)*", "First=first More+=more COMMAs+=COMMA")]
+    [InlineData("first:Elem (COMMA more:Elem?)*", "First=first COMMAs+=COMMA More+=more")]
     [InlineData("name:IDENT held:(COMMA inner:Elem)?", "Name=name Inner=inner Held=inner")]
     [InlineData("name:IDENT held:(COMMA Elem)?", "Name=name Held=Elem")]
     [InlineData("held:(inner:Elem)?", "Inner=inner Held=inner")]
@@ -38,15 +38,15 @@ public sealed class NodeSlotTests
     }
 
     [Theory]
-    [InlineData("name:IDENT Elem?", "name:IDENT held:(COMMA Elem)?", "Name=name")]
-    [InlineData("LT held:(COMMA inner:Elem)?", "GT held:(COMMA inner:Elem)?", "Inner=inner Held=inner")]
-    [InlineData("LT held:(COMMA inner:Elem)?", "GT held:(COMMA Elem)?", "")]
-    [InlineData("inner:Elem LT held:Elem?", "GT held:(COMMA inner:Elem)?", "Inner=inner")]
-    [InlineData("first:Elem (COMMA rest:Elem)* GT", "LT rest:Elem", "")]
-    [InlineData("rest:Elem GT", "LT (COMMA rest:Elem)+", "Rest=rest")]
-    [InlineData("LT held:(COMMA inner:Elem)?", "GT held:(COMMA other:Elem)?", "")]
-    [InlineData("LT held:(COMMA first:Elem second:Elem)?", "GT held:(COMMA first:Elem second:Elem)?", "Held=first Group0=group")]
-    public void ALaterUnnamedAlternativeFillsWhatTheFirstDeclaresInTheSameRole(string firstShape, string laterShape, string filled)
+    [InlineData("name:IDENT Elem?", "name:IDENT held:(COMMA Elem)?", "Name=name Held=Elem")]
+    [InlineData("LT held:(COMMA inner:Elem)?", "GT held:(COMMA inner:Elem)?", "GT=GT Inner=inner Held=inner")]
+    [InlineData("LT held:(COMMA inner:Elem)?", "GT held:(COMMA Elem)?", "GT=GT Held=Elem")]
+    [InlineData("inner:Elem LT held:Elem?", "GT held:(COMMA inner:Elem)?", "GT=GT Inner=inner Held=inner")]
+    [InlineData("first:Elem (COMMA rest:Elem)* GT", "LT rest:Elem", "LT=LT Rest=rest")]
+    [InlineData("rest:Elem GT", "LT (COMMA rest:Elem)+", "LT=LT Rest=rest Elems+=rest")]
+    [InlineData("LT held:(COMMA inner:Elem)?", "GT held:(COMMA other:Elem)?", "GT=GT Other=other Held=other")]
+    [InlineData("LT held:(COMMA first:Elem second:Elem)?", "GT held:(COMMA first:Elem second:Elem)?", "GT=GT Group0=group Held=first")]
+    public void EachUnnamedAlternativeFillsAllItsCapturesAndForwardingAliases(string firstShape, string laterShape, string filled)
     {
         var (first, _) = Alternative(firstShape);
         var (later, names) = Alternative(laterShape);
@@ -54,6 +54,21 @@ public sealed class NodeSlotTests
         var slots = AstEmitter.NodeSlots(new RuleIR("Item", [first, later]), later, "ItemNode");
 
         Assert.Equal(filled, string.Join(" ", slots.Select(slot => slot.Name + (slot.Appends ? "+=" : "=") + names.GetValueOrDefault(slot.Source, "group"))));
+    }
+
+    [Fact]
+    public void EachUnnamedAlternativeFillsItsOwnCaptureInTheSharedNode()
+    {
+        var first = new RuleRefIR(Elem);
+        var second = new RuleRefIR(Elem);
+        var firstAlternative = new RuleAlternativeIR(null, [new FieldLabelIR("first", first)], first);
+        var secondAlternative = new RuleAlternativeIR(null, [new FieldLabelIR("second", second)], second);
+        var rule = new RuleIR("Item", [firstAlternative, secondAlternative]);
+
+        Assert.Collection(AstEmitter.NodeSlots(rule, firstAlternative, "ItemNode"),
+            slot => Assert.Equal(("First", first, false), (slot.Name, slot.Source, slot.Appends)));
+        Assert.Collection(AstEmitter.NodeSlots(rule, secondAlternative, "ItemNode"),
+            slot => Assert.Equal(("Second", second, false), (slot.Name, slot.Source, slot.Appends)));
     }
 
     // Builds the shape directly: a label names its element, an unlabelled element is named after its token or rule.

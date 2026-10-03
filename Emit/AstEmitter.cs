@@ -1,3 +1,4 @@
+using System;
 using System.Collections.Generic;
 using System.Linq;
 using Storm.SourceGenerator.Frontend;
@@ -285,7 +286,7 @@ public static partial class AstEmitter
     /// </summary>
     private static void EmitRuleNodeTypes(CodeWriter writer, RuleIR rule, EmissionContext context)
     {
-        if(SharesFirstAlternativeNode(rule))
+        if(HasSharedAlternativeNode(rule))
         {
             EmitSealedNode(writer, rule, context);
         }
@@ -302,8 +303,8 @@ public static partial class AstEmitter
     {
         var nodeTypeName = rule.Name + "Node";
         var baseType = "SyntaxNode";
-        var properties = CollectProperties(rule.Alternatives[0], nodeTypeName, context.EmitObsoleteShims, out var groupStructs, out var shims);
-        GuardWhatLaterAlternativesLeaveUnset(rule, nodeTypeName, properties);
+        var shapes = CollectNodeShapes(rule, nodeTypeName, context.EmitObsoleteShims, out var groupStructs, out var shims);
+        var properties = shapes.SelectMany(shape => shape.Properties).GroupBy(property => property.Name).Select(group => group.First()).ToList();
 
         // Check for trait interfaces
         var interfaces = new List<string>();
@@ -325,6 +326,11 @@ public static partial class AstEmitter
 
         writer.WriteBlock($"public sealed class {nodeTypeName} : {implementsList}", () =>
         {
+            if(shapes.Count > 1)
+            {
+                writer.WriteLine("internal int __StormAlternative { get; set; }");
+            }
+
             // Properties
             foreach(var prop in properties)
             {
@@ -340,7 +346,7 @@ public static partial class AstEmitter
             EmitObsoleteShimProperties(writer, shims);
 
             // Children() override
-            EmitChildrenOverride(writer, properties);
+            EmitAlternativeChildren(writer, shapes);
         });
 
         // Emit anonymous group structs as sibling types in the same namespace (Task 3.1).
@@ -522,7 +528,7 @@ public static partial class AstEmitter
     ///         change the count, so it keeps its existing behaviour.</item>
     /// </list>
     /// </remarks>
-    private static List<PropertyInfo> CollectProperties(RuleAlternativeIR alt, string nodeTypeName, bool emitObsoleteShims, out List<GroupStructModel> groupStructs, out List<ObsoleteShim> shims)
+    private static List<PropertyInfo> CollectProperties(RuleAlternativeIR alt, string nodeTypeName, bool emitObsoleteShims, out List<GroupStructModel> groupStructs, out List<ObsoleteShim> shims, Func<AnonymousGroupInfo, string>? groupName = null)
     {
         var properties = new List<PropertyInfo>();
         groupStructs = new List<GroupStructModel>();
@@ -634,7 +640,7 @@ public static partial class AstEmitter
         // old flat-field properties as [Obsolete] shims (Tasks 5.1-5.4).
         foreach(var group in groups)
         {
-            AddGroupProjection(group, nodeTypeName, properties, groupStructs, shims, emitObsoleteShims, usedNames);
+            AddGroupProjection(group, nodeTypeName, properties, groupStructs, shims, emitObsoleteShims, usedNames, groupName?.Invoke(group));
         }
 
         // Then, walk the expression to find unlabeled elements. Skip the wrapper
@@ -652,13 +658,9 @@ public static partial class AstEmitter
             property.MayBeAbsent = property.Source != null && skippable.Contains(property.Source);
         }
 
-        foreach(var alias in properties.Where(property => !property.IsChild && property.Source != null))
-        {
-            alias.Owner = properties.FirstOrDefault(property => property.IsChild && ReferenceEquals(property.Source, alias.Source))
-                ?? properties.FirstOrDefault(property => property.Group != null && property.Source is SequenceIR group && group.Elements.Contains(alias.Source!));
-        }
-
-        return properties;
+        var order = new Dictionary<ExpressionIR, int>();
+        CaptureOrder(alt.Expression, order);
+        return properties.OrderBy(property => property.Source != null && order.TryGetValue(property.Source, out var position) ? position : int.MaxValue).ToList();
     }
 
     /// <summary>
@@ -1172,7 +1174,7 @@ public static partial class AstEmitter
     /// </summary>
     private sealed class PropertyInfo
     {
-        public string Name { get; }
+        public string Name { get; set; }
         public string TypeName { get; }
         public bool IsNullable { get; }
         public bool IsNodeType { get; }
@@ -1184,8 +1186,6 @@ public static partial class AstEmitter
         public bool IsChild { get; private set; } = true;
 
         public bool MayBeAbsent { get; set; }
-
-        public PropertyInfo? Owner { get; set; }
 
         public ExpressionIR? Source { get; private set; }
 

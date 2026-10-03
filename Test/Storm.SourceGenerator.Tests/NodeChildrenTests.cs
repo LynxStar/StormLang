@@ -14,6 +14,11 @@ public sealed class NodeChildrenTests
     private static readonly RuleIR Elem = new("Elem", [new RuleAlternativeIR(null, [], new TokenRefIR(Ident))]);
 
     [Theory]
+    [InlineData("first:Elem | second:Elem", "switch (__StormAlternative) { case 0: yield return First; yield break; case 1: yield return Second; yield break; }")]
+    [InlineData("(a:Elem b:Elem)* SEMI | LT (c:Elem d:Elem)*", "switch (__StormAlternative) { case 0: foreach (var groupItem in Group0) { yield return groupItem.A; yield return groupItem.B; } yield break; case 1: foreach (var groupItem in Group0Alternative2) { yield return groupItem.C; yield return groupItem.D; } yield break; }")]
+    [InlineData("(a:Elem b:Elem)* SEMI | LT (b:Elem a:Elem)*", "switch (__StormAlternative) { case 0: foreach (var groupItem in Group0) { yield return groupItem.A; yield return groupItem.B; } yield break; case 1: foreach (var groupItem in Group0Alternative2) { yield return groupItem.B; yield return groupItem.A; } yield break; }")]
+    [InlineData("Elem second:Elem", "yield return Elem; yield return Second;")]
+    [InlineData("x:Elem (COMMA a:Elem b:Elem)* SEMI y:Elem", "yield return X; foreach (var groupItem in Group0) { yield return groupItem.A; yield return groupItem.B; } yield return Y;")]
     [InlineData("name:IDENT held:(COMMA inner:Elem)?", "if (Inner != null) { yield return Inner; }")]
     [InlineData("name:IDENT held:(COMMA Elem)?", "if (Held != null) { yield return Held; }")]
     [InlineData("held:(inner:Elem)?", "if (Inner != null) { yield return Inner; }")]
@@ -29,16 +34,30 @@ public sealed class NodeChildrenTests
     [InlineData("head:IDENT (key:IDENT (LT value:Elem GT)? SEMI)*", "foreach (var groupItem in Group0) { if (groupItem.Group0 != null) { yield return groupItem.Group0.Value.Value; } }")]
     [InlineData("(first:Elem (COMMA rest:Elem)*)*", "foreach (var groupItem in Group0) { yield return groupItem.First; if (!groupItem.Group0.IsDefault) { foreach (var groupItem1 in groupItem.Group0) { yield return groupItem1.Rest; } } }")]
     [InlineData("head:Elem (key:IDENT COMMA? value:IDENT)*", "yield return Head;")]
-    [InlineData("a:Elem COMMA | SEMI", "if (A != null) { yield return A; }")]
-    [InlineData("a:Elem COMMA | a:Elem SEMI", "yield return A;")]
-    [InlineData("a:Elem COMMA | SEMI (COMMA a:Elem)*", "if (A != null) { yield return A; }")]
-    [InlineData("a:Elem COMMA | SEMI (COMMA a:Elem)+", "yield return A;")]
+    [InlineData("a:Elem COMMA | SEMI", "switch (__StormAlternative) { case 0: yield return A; yield break; case 1: yield break; }")]
+    [InlineData("a:Elem COMMA | a:Elem SEMI", "switch (__StormAlternative) { case 0: yield return A; yield break; case 1: yield return A; yield break; }")]
+    [InlineData("a:Elem COMMA | SEMI (COMMA a:Elem)*", "switch (__StormAlternative) { case 0: yield return A; yield break; case 1: foreach (var child in Elems) { yield return child; } yield break; }")]
+    [InlineData("a:Elem COMMA | SEMI (COMMA a:Elem)+", "switch (__StormAlternative) { case 0: yield return A; yield break; case 1: foreach (var child in Elems) { yield return child; } yield break; }")]
     public void ChildrenYieldsEachNodeTheNodeHoldsOnce(string shape, string children)
     {
         var item = new RuleIR("Item", shape.Split(" | ").Select(Alternative).ToList());
         var ast = AstEmitter.EmitAstNodes(new EmissionContext("Test.Generated", "Test", new GrammarIR([Ident, Comma, Lt, Gt, Semi], [Elem, item]), emitObsoleteShims: false));
 
         Assert.Equal(children, ChildrenOf(ast, "ItemNode"));
+    }
+
+    [Fact]
+    public void ADirectCaptureInALaterAlternativeTakesPrecedenceOverAnObsoleteGroupShim()
+    {
+        var item = new RuleIR("Item", [Alternative("(a:Elem b:Elem)* SEMI"), Alternative("a:Elem COMMA")]);
+        var ast = AstEmitter.EmitAstNodes(new EmissionContext("Test.Generated", "Test",
+            new GrammarIR([Ident, Comma, Lt, Gt, Semi], [Elem, item]), emitObsoleteShims: true));
+
+        _ = Assert.Single(ast.Split('\n'), line => line.Contains(" A { get; set; }", StringComparison.Ordinal));
+        Assert.DoesNotContain(" A =>", ast);
+        Assert.Contains(" B =>", ast);
+        Assert.Contains("case 1:", ast);
+        Assert.Contains("yield return A;", ast);
     }
 
     private static RuleAlternativeIR Alternative(string shape)
@@ -67,6 +86,19 @@ public sealed class NodeChildrenTests
 
         var body = shape switch
         {
+            "first:Elem" => reference("first"),
+            "second:Elem" => reference("second"),
+            "(a:Elem b:Elem)* SEMI" => new SequenceIR([new ZeroOrMoreIR(new SequenceIR([reference("a"), reference("b")])), token(Semi)]),
+            "LT (c:Elem d:Elem)*" => new SequenceIR([token(Lt), new ZeroOrMoreIR(new SequenceIR([reference("c"), reference("d")]))]),
+            "LT (b:Elem a:Elem)*" => new SequenceIR([token(Lt), new ZeroOrMoreIR(new SequenceIR([reference("b"), reference("a")]))]),
+            "Elem second:Elem" => new SequenceIR([reference(), reference("second")]),
+            "x:Elem (COMMA a:Elem b:Elem)* SEMI y:Elem" => new SequenceIR(
+            [
+                reference("x"),
+                new ZeroOrMoreIR(new SequenceIR([token(Comma), reference("a"), reference("b")])),
+                token(Semi),
+                reference("y"),
+            ]),
             "name:IDENT held:(COMMA inner:Elem)?" => new SequenceIR([token(Ident, "name"), labelled("held", new OptionalIR(new SequenceIR([token(Comma), reference("inner")])))]),
             "name:IDENT held:(COMMA Elem)?" => new SequenceIR([token(Ident, "name"), labelled("held", new OptionalIR(new SequenceIR([token(Comma), reference()])))]),
             "held:(inner:Elem)?" => labelled("held", new OptionalIR(reference("inner"))),
