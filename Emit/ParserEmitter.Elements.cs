@@ -365,7 +365,7 @@ public static partial class ParserEmitter
                         break;
 
                     case GroupFieldKind.Other:
-                        if(AstEmitter.Representative(field.Element, plan.Labels, Array.Empty<ExpressionIR>()) is { } source)
+                        if(AstEmitter.Representative(field.Element, Array.Empty<ExpressionIR>()) is { } source)
                         {
                             frame.Feed(source, slot, slot.Builder != null);
                         }

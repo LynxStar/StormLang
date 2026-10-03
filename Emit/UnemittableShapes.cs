@@ -138,7 +138,7 @@ internal sealed class UnemittableShapes
             }
             else if(field.Kind == GroupFieldKind.Other)
             {
-                Walk(element, AstEmitter.Representative(element, groupLabels, []) ?? sequence);
+                Walk(element, AstEmitter.Representative(element, []) ?? sequence);
             }
             else
             {

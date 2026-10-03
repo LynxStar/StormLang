@@ -1,3 +1,4 @@
+using System;
 using System.Collections.Generic;
 using System.Linq;
 using Storm.SourceGenerator.IR;
@@ -27,13 +28,13 @@ public static partial class AstEmitter
         return slots.Where(slot => declared.Contains((slot.Name, slot.TypeName))).ToList();
     }
 
-    internal static ExpressionIR? Representative(ExpressionIR labelled, IReadOnlyList<FieldLabelIR> labels, ICollection<ExpressionIR> groupSequences)
+    internal static ExpressionIR? Representative(ExpressionIR labelled, ICollection<ExpressionIR> groupSequences)
     {
         return labelled switch
         {
             OptionalIR { Inner: SequenceIR group } when groupSequences.Contains(group) => group.Elements.OfType<RuleRefIR>().FirstOrDefault(),
             OptionalIR { Inner: SequenceIR sequence } => sequence.Elements.Any(element => element is RuleRefIR)
-                ? sequence.Elements.OfType<RuleRefIR>().FirstOrDefault(reference => !labels.Any(label => ReferenceEquals(label.Expression, reference)))
+                ? sequence.Elements.OfType<RuleRefIR>().First()
                 : sequence.Elements.FirstOrDefault(element => Leaf(element) is not (null or RuleRefIR)),
             OptionalIR optional => Leaf(optional.Inner),
             ZeroOrMoreIR { Inner: SequenceIR sequence } => ListRepresentative(sequence),
@@ -54,46 +55,63 @@ public static partial class AstEmitter
         return expr is TokenRefIR or RuleRefIR or StringLiteralIR or AlternationIR { IsTokenChoice: true } ? expr : null;
     }
 
-    private static PropertyInfo RepeatedLabelProperty(ExpressionIR labelled, string propName, IReadOnlyList<FieldLabelIR> labels, ICollection<ExpressionIR> groupSequences)
+    // A label on an optional or repeated group forwards a node that a capture inside the group holds -- a group struct's
+    // field, or the reference's own label -- and only that capture yields it from Children(). The exception is a labelled
+    // reference a repetition overwrites: it keeps only the last round, so the group's label is what holds every node.
+    private static bool Forwards(ExpressionIR labelled, ExpressionIR? source, IReadOnlyList<FieldLabelIR> labels, ICollection<ExpressionIR> groupSequences, ICollection<RuleRefIR> repeatedRuleRefs)
+    {
+        var inner = labelled switch
+        {
+            OptionalIR optional => optional.Inner,
+            ZeroOrMoreIR zeroOrMore => zeroOrMore.Inner,
+            OneOrMoreIR oneOrMore => oneOrMore.Inner,
+            _ => null,
+        };
+
+        return inner != null && source is RuleRefIR reference
+            && (groupSequences.Contains(inner) || (labels.Any(label => ReferenceEquals(label.Expression, reference)) && !repeatedRuleRefs.Contains(reference)));
+    }
+
+    private static PropertyInfo RepeatedLabelProperty(ExpressionIR labelled, string propName)
     {
         var elementType = GetPropertyInfo(labelled, propName).TypeName.TrimEnd('?');
         var isNode = elementType != "Token";
 
-        return new PropertyInfo(propName, $"ImmutableArray<{elementType}>", false, isNode, true, $" = ImmutableArray<{elementType}>.Empty;")
-            .FilledBy(Representative(labelled, labels, groupSequences), true);
+        return new PropertyInfo(propName, $"ImmutableArray<{elementType}>", false, isNode, true, $" = ImmutableArray<{elementType}>.Empty;");
     }
 
-    private static void CollectInsideRepetition(ExpressionIR expr, bool insideRep, HashSet<ExpressionIR> result)
+    private static void CollectInside(ExpressionIR expr, Func<ExpressionIR, bool> opens, bool inside, HashSet<ExpressionIR> result)
     {
-        if(insideRep)
+        if(inside)
         {
             _ = result.Add(expr);
         }
 
+        var nested = inside || opens(expr);
         switch(expr)
         {
             case SequenceIR sequence:
                 foreach(var element in sequence.Elements)
                 {
-                    CollectInsideRepetition(element, insideRep, result);
+                    CollectInside(element, opens, nested, result);
                 }
 
                 break;
             case AlternationIR alternation:
                 foreach(var alternative in alternation.Alternatives)
                 {
-                    CollectInsideRepetition(alternative, insideRep, result);
+                    CollectInside(alternative, opens, nested, result);
                 }
 
                 break;
             case OptionalIR optional:
-                CollectInsideRepetition(optional.Inner, insideRep, result);
+                CollectInside(optional.Inner, opens, nested, result);
                 break;
             case ZeroOrMoreIR zeroOrMore:
-                CollectInsideRepetition(zeroOrMore.Inner, true, result);
+                CollectInside(zeroOrMore.Inner, opens, nested, result);
                 break;
             case OneOrMoreIR oneOrMore:
-                CollectInsideRepetition(oneOrMore.Inner, true, result);
+                CollectInside(oneOrMore.Inner, opens, nested, result);
                 break;
         }
     }
@@ -125,7 +143,7 @@ public static partial class AstEmitter
 
             var repeats = repeated || expr is not OptionalIR;
             var representative = labelled
-                ? Representative(expr, labels, groupSequences)
+                ? Representative(expr, groupSequences)
                 : expr is OptionalIR ? UnlabelledReference(inner, labels) : RepeatedRuleRef(inner);
             if(!labelled && representative is RuleRefIR reference && reference != fed)
             {

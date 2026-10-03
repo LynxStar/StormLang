@@ -23,8 +23,10 @@ public sealed class NodeSlotTests
     [InlineData("first:Elem (COMMA Elem?)*", "First=first COMMAs+=COMMA Elems+=Elem")]
     [InlineData("first:Elem (COMMA (LT Elem GT))*", "First=first COMMAs+=COMMA Elems+=Elem")]
     [InlineData("first:Elem (COMMA more:Elem?)*", "First=first More+=more COMMAs+=COMMA")]
-    [InlineData("name:IDENT held:(COMMA inner:Elem)?", "Name=name Inner=inner")]
+    [InlineData("name:IDENT held:(COMMA inner:Elem)?", "Name=name Inner=inner Held=inner")]
     [InlineData("name:IDENT held:(COMMA Elem)?", "Name=name Held=Elem")]
+    [InlineData("held:(inner:Elem)?", "Inner=inner Held=inner")]
+    [InlineData("name:IDENT (COMMA inner:Elem)?", "Name=name Inner=inner Elem=inner")]
     public void EachPropertyIsFilledByTheElementItHolds(string shape, string filled)
     {
         var (alternative, names) = Alternative(shape);
@@ -70,7 +72,7 @@ public sealed class NodeSlotTests
             return expr;
         }
 
-        ExpressionIR body = shape switch
+        var body = shape switch
         {
             "name:IDENT Elem?" => new SequenceIR([token(Ident, "name"), new OptionalIR(reference())]),
             "name:IDENT (COMMA Elem)?" => new SequenceIR([token(Ident, "name"), new OptionalIR(new SequenceIR([token(Comma), reference()]))]),
@@ -88,6 +90,8 @@ public sealed class NodeSlotTests
             ]),
             "name:IDENT held:(COMMA inner:Elem)?" => new SequenceIR([token(Ident, "name"), labelled("held", new OptionalIR(new SequenceIR([token(Comma), reference("inner")])))]),
             "name:IDENT held:(COMMA Elem)?" => new SequenceIR([token(Ident, "name"), labelled("held", new OptionalIR(new SequenceIR([token(Comma), reference()])))]),
+            "held:(inner:Elem)?" => labelled("held", new OptionalIR(reference("inner"))),
+            "name:IDENT (COMMA inner:Elem)?" => new SequenceIR([token(Ident, "name"), new OptionalIR(new SequenceIR([token(Comma), reference("inner")]))]),
             _ => throw new ArgumentOutOfRangeException(nameof(shape), shape, null),
         };
 

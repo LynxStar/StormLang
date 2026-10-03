@@ -497,99 +497,6 @@ public static partial class AstEmitter
     }
 
     /// <summary>
-    /// Emits the <c>Children()</c> override for a node class. Node-typed scalar and
-    /// nullable properties are yielded (nullable ones guarded); node-typed list
-    /// properties are iterated. Anonymous-group properties are iterated according to
-    /// their modifier, yielding each scalar node-typed field from every group struct
-    /// occurrence (the minimal group traversal for coherent output; deeper per-group
-    /// iteration is handled separately).
-    /// </summary>
-    private static void EmitChildrenOverride(CodeWriter writer, List<PropertyInfo> properties)
-    {
-        writer.WriteBlock("public override IEnumerable<SyntaxNode> Children()", () =>
-        {
-            var hasChildren = false;
-            foreach(var prop in properties.Where(prop => prop.IsChild))
-            {
-                if(prop.IsGroup)
-                {
-                    if(EmitGroupChildren(writer, prop))
-                    {
-                        hasChildren = true;
-                    }
-                }
-                else if(prop.IsNodeType && !prop.IsList)
-                {
-                    hasChildren = true;
-                    if(prop.IsNullable)
-                    {
-                        writer.WriteBlock($"if ({prop.Name} != null)", () => writer.WriteLine($"yield return {prop.Name};"));
-                    }
-                    else
-                    {
-                        writer.WriteLine($"yield return {prop.Name};");
-                    }
-                }
-                else if(prop.IsNodeType && prop.IsList)
-                {
-                    hasChildren = true;
-                    writer.WriteBlock($"foreach (var child in {prop.Name})", () => writer.WriteLine("yield return child;"));
-                }
-            }
-
-            if(!hasChildren)
-            {
-                writer.WriteLine("yield break;");
-            }
-        });
-    }
-
-    /// <summary>
-    /// Emits the <c>Children()</c> iteration for one anonymous-group property, yielding
-    /// each scalar node-typed field from the group struct(s) according to the group's
-    /// modifier. Returns true when at least one yield was emitted (the group has
-    /// node-typed fields).
-    /// </summary>
-    private static bool EmitGroupChildren(CodeWriter writer, PropertyInfo prop)
-    {
-        var nodeFields = prop.GroupNodeFieldNames!;
-        if(nodeFields.Count == 0)
-        {
-            return false;
-        }
-
-        if(prop.IsList)
-        {
-            writer.WriteBlock($"foreach (var groupItem in {prop.Name})", () =>
-            {
-                foreach(var field in nodeFields)
-                {
-                    writer.WriteLine($"yield return groupItem.{field};");
-                }
-            });
-        }
-        else if(prop.IsNullable)
-        {
-            writer.WriteBlock($"if ({prop.Name} != null)", () =>
-            {
-                foreach(var field in nodeFields)
-                {
-                    writer.WriteLine($"yield return {prop.Name}.Value.{field};");
-                }
-            });
-        }
-        else
-        {
-            foreach(var field in nodeFields)
-            {
-                writer.WriteLine($"yield return {prop.Name}.{field};");
-            }
-        }
-
-        return true;
-    }
-
-    /// <summary>
     /// Collects the properties for an alternative's AST node type and, via
     /// <paramref name="groupStructs"/>, the anonymous group structs that must be
     /// emitted as sibling types.
@@ -666,7 +573,7 @@ public static partial class AstEmitter
         CollectRepeatedRuleRefs(alt.Expression, repeatedRuleRefs);
 
         var insideRepetition = new HashSet<ExpressionIR>();
-        CollectInsideRepetition(alt.Expression, false, insideRepetition);
+        CollectInside(alt.Expression, expr => expr is ZeroOrMoreIR or OneOrMoreIR, false, insideRepetition);
 
         // First, add properties from field labels. Labels that live inside an
         // anonymous group are excluded here — they become fields on the group
@@ -710,14 +617,14 @@ public static partial class AstEmitter
             else if(label.Expression is RuleRefIR repeated && repeatedRuleRefs.Contains(repeated))
             {
                 // Kept beside the list only because consumers still read it (backlog/storm.md).
-                propInfo = new PropertyInfo(propName, repeated.Rule.Name + "Node", false, true, false, " = default!;", isChild: false).FilledBy(repeated, false);
+                propInfo = new PropertyInfo(propName, repeated.Rule.Name + "Node", false, true, false, " = default!;").FilledBy(repeated, false, child: false);
             }
             else
             {
-                propInfo = label.Expression is RuleRefIR or OptionalIR && insideRepetition.Contains(label.Expression)
-                    ? RepeatedLabelProperty(label.Expression, propName, alt.FieldLabels, groupSequences)
-                    : GetPropertyInfo(label.Expression, propName)
-                        .FilledBy(Representative(label.Expression, alt.FieldLabels, groupSequences), label.Expression is ZeroOrMoreIR or OneOrMoreIR);
+                var appends = label.Expression is RuleRefIR or OptionalIR && insideRepetition.Contains(label.Expression);
+                var source = Representative(label.Expression, groupSequences);
+                propInfo = (appends ? RepeatedLabelProperty(label.Expression, propName) : GetPropertyInfo(label.Expression, propName))
+                    .FilledBy(source, appends || label.Expression is ZeroOrMoreIR or OneOrMoreIR, !Forwards(label.Expression, source, alt.FieldLabels, groupSequences, repeatedRuleRefs));
             }
 
             properties.Add(propInfo);
@@ -737,6 +644,15 @@ public static partial class AstEmitter
         // auto-generated list/optional property (e.g. the redundant Multiplicatives
         // list that used to sit alongside the projected Group0).
         CollectUnlabeledProperties(alt.Expression, alt.FieldLabels, properties, usedNames, groupSequences);
+
+        // A labelled reference under an optional keeps the non-nullable type its readers were written against, so
+        // Children() guards its absence rather than the type admitting it.
+        var insideOptional = new HashSet<ExpressionIR>();
+        CollectInside(alt.Expression, expr => expr is OptionalIR, false, insideOptional);
+        foreach(var property in properties.Where(property => property.IsNodeType && !property.IsList && !property.IsNullable))
+        {
+            property.MayBeAbsent = property.Source != null && insideOptional.Contains(property.Source);
+        }
 
         return properties;
     }
@@ -1067,7 +983,7 @@ public static partial class AstEmitter
                     {
                         var name = EnsureUnique(PascalCase(seqRuleRef.Rule.Name), usedNames);
                         var labelled = labels.Any(label => ReferenceEquals(label.Expression, seqRuleRef));
-                        return new PropertyInfo(name, seqRuleRef.Rule.Name + "Node?", true, true, false, "").FilledBy(labelled ? null : seqRuleRef, false);
+                        return new PropertyInfo(name, seqRuleRef.Rule.Name + "Node?", true, true, false, "").FilledBy(seqRuleRef, false, !labelled);
                     }
 
                     var seqTokenRef = seq.Elements.OfType<TokenRefIR>().LastOrDefault();
@@ -1260,23 +1176,17 @@ public static partial class AstEmitter
         public bool IsList { get; }
         public string DefaultValue { get; }
 
-        /// <summary>
-        /// For an anonymous-group property (a <c>Group{N}</c> backed by a generated
-        /// struct), the scalar node-typed field names on that struct that
-        /// <c>Children()</c> must yield; <c>null</c> for ordinary properties. An empty
-        /// list means the group carries no directly yieldable node fields.
-        /// </summary>
-        public IReadOnlyList<string>? GroupNodeFieldNames { get; }
+        public GroupStructModel? Group { get; }
 
-        public bool IsGroup => GroupNodeFieldNames != null;
+        public bool IsChild { get; private set; } = true;
 
-        public bool IsChild { get; }
+        public bool MayBeAbsent { get; set; }
 
         public ExpressionIR? Source { get; private set; }
 
         public bool Appends { get; private set; }
 
-        public PropertyInfo(string name, string typeName, bool isNullable, bool isNodeType, bool isList, string defaultValue, IReadOnlyList<string>? groupNodeFieldNames = null, bool isChild = true)
+        public PropertyInfo(string name, string typeName, bool isNullable, bool isNodeType, bool isList, string defaultValue, GroupStructModel? group = null)
         {
             Name = name;
             TypeName = typeName;
@@ -1284,14 +1194,14 @@ public static partial class AstEmitter
             IsNodeType = isNodeType;
             IsList = isList;
             DefaultValue = defaultValue;
-            GroupNodeFieldNames = groupNodeFieldNames;
-            IsChild = isChild;
+            Group = group;
         }
 
-        public PropertyInfo FilledBy(ExpressionIR? source, bool appends)
+        public PropertyInfo FilledBy(ExpressionIR? source, bool appends, bool child = true)
         {
             Source = source;
             Appends = appends;
+            IsChild = child;
             return this;
         }
     }

@@ -74,7 +74,6 @@ internal enum GroupFieldKind
 internal readonly record struct GroupStructFieldDescriptor(
     string FieldName,
     string FieldType,
-    bool IsNodeType,
     ExpressionIR Element,
     FieldLabelIR? Label,
     GroupFieldKind Kind,
@@ -300,21 +299,24 @@ public static partial class AstEmitter
 
     /// <summary>
     /// A single public field emitted on a group struct: <c>public {TypeName} {Name};</c>.
-    /// <see cref="IsNodeType"/> is true only for a scalar <c>{Rule}Node</c> field (a
-    /// direct rule reference); it drives whether <c>Children()</c> yields the field.
-    /// Token fields, list fields, and nested-group fields are not directly yielded.
     /// </summary>
     private readonly struct GroupStructField
     {
         public string Name { get; }
         public string TypeName { get; }
         public bool IsNodeType { get; }
+        public bool IsNullable { get; }
+        public bool IsList { get; }
+        public GroupStructModel? Nested { get; }
 
-        public GroupStructField(string name, string typeName, bool isNodeType)
+        public GroupStructField(string name, string typeName, bool isNodeType, bool isNullable, bool isList, GroupStructModel? nested)
         {
             Name = name;
             TypeName = typeName;
             IsNodeType = isNodeType;
+            IsNullable = isNullable;
+            IsList = isList;
+            Nested = nested;
         }
     }
 
@@ -387,13 +389,8 @@ public static partial class AstEmitter
         var model = BuildGroupStruct(structName, group.Sequence, group.Labels);
         groupStructs.Add(model);
 
-        var nodeFieldNames = model.Fields
-            .Where(field => field.IsNodeType)
-            .Select(field => field.Name)
-            .ToList();
-
         var groupPropName = EnsureUnique("Group" + group.GroupIndex, usedNames);
-        properties.Add(GroupPropertyForModifier(groupPropName, structName, group.Modifier, nodeFieldNames)
+        properties.Add(GroupPropertyForModifier(groupPropName, model, group.Modifier)
             .FilledBy(group.Sequence, group.Modifier is GroupModifier.ZeroOrMore or GroupModifier.OneOrMore));
 
         if(emitObsoleteShims)
@@ -406,19 +403,18 @@ public static partial class AstEmitter
     /// Builds the parent-node property for a struct-backed anonymous group: a scalar
     /// group struct, a nullable group struct, or an <c>ImmutableArray</c> of group
     /// structs depending on the modifier (Task 3.3). The property is never a node
-    /// type itself, so the ordinary node <c>Children()</c> emission skips it; the
-    /// node-typed struct field names are carried on the property so <c>Children()</c>
-    /// can iterate the group and yield them.
+    /// type itself; it carries the group's struct so <c>Children()</c> can walk it.
     /// </summary>
-    private static PropertyInfo GroupPropertyForModifier(string propName, string structName, GroupModifier modifier, IReadOnlyList<string> nodeFieldNames)
+    private static PropertyInfo GroupPropertyForModifier(string propName, GroupStructModel model, GroupModifier modifier)
     {
+        var structName = model.StructName;
         return modifier switch
         {
             GroupModifier.ZeroOrMore or GroupModifier.OneOrMore
-                => new PropertyInfo(propName, $"ImmutableArray<{structName}>", false, false, true, $" = ImmutableArray<{structName}>.Empty;", nodeFieldNames),
+                => new PropertyInfo(propName, $"ImmutableArray<{structName}>", false, false, true, $" = ImmutableArray<{structName}>.Empty;", model),
             GroupModifier.Optional
-                => new PropertyInfo(propName, $"{structName}?", true, false, false, "", nodeFieldNames),
-            _ => new PropertyInfo(propName, structName, false, false, false, " = default;", nodeFieldNames),
+                => new PropertyInfo(propName, $"{structName}?", true, false, false, "", model),
+            _ => new PropertyInfo(propName, structName, false, false, false, " = default;", model),
         };
     }
 
@@ -439,10 +435,20 @@ public static partial class AstEmitter
         {
             if(descriptor.Kind == GroupFieldKind.NestedGroup)
             {
-                model.NestedStructs.Add(BuildGroupStruct(descriptor.NestedStructName!, descriptor.NestedSequence!, groupLabels));
+                var nested = BuildGroupStruct(descriptor.NestedStructName!, descriptor.NestedSequence!, groupLabels);
+                model.NestedStructs.Add(nested);
+                model.Fields.Add(new GroupStructField(
+                    descriptor.FieldName,
+                    descriptor.FieldType,
+                    false,
+                    descriptor.NestedModifier == GroupModifier.Optional,
+                    descriptor.NestedModifier is GroupModifier.ZeroOrMore or GroupModifier.OneOrMore,
+                    nested));
+                continue;
             }
 
-            model.Fields.Add(new GroupStructField(descriptor.FieldName, descriptor.FieldType, descriptor.IsNodeType));
+            var shape = GetPropertyInfo(descriptor.Element, descriptor.FieldName);
+            model.Fields.Add(new GroupStructField(descriptor.FieldName, descriptor.FieldType, shape.IsNodeType, shape.IsNullable, shape.IsList, null));
         }
 
         return model;
@@ -487,7 +493,7 @@ public static partial class AstEmitter
                     _ => nestedStructName,
                 };
                 descriptors.Add(new GroupStructFieldDescriptor(
-                    nestedFieldName, nestedFieldType, false, element, null,
+                    nestedFieldName, nestedFieldType, element, null,
                     GroupFieldKind.NestedGroup, nested.Value.Sequence, nestedStructName, nested.Value.Modifier));
                 continue;
             }
@@ -498,7 +504,7 @@ public static partial class AstEmitter
                 var fieldName = EnsureUnique(PascalCase(label.Label), usedFieldNames);
                 var fieldType = FieldTypeForLabeledElement(element, label, fieldName);
                 descriptors.Add(new GroupStructFieldDescriptor(
-                    fieldName, fieldType, IsScalarNodeType(fieldType), element, label,
+                    fieldName, fieldType, element, label,
                     ClassifyLabeledElement(element, label), null, null, default));
                 continue;
             }
@@ -509,7 +515,7 @@ public static partial class AstEmitter
             {
                 var ruleFieldName = EnsureUnique(PascalCase(ruleRef.Rule.Name), usedFieldNames);
                 descriptors.Add(new GroupStructFieldDescriptor(
-                    ruleFieldName, ruleRef.Rule.Name + "Node", true, element, null,
+                    ruleFieldName, ruleRef.Rule.Name + "Node", element, null,
                     GroupFieldKind.RuleRef, null, null, default));
             }
         }
@@ -579,8 +585,7 @@ public static partial class AstEmitter
 
     /// <summary>
     /// Returns true when a field type is a scalar node reference (<c>{Rule}Node</c>) --
-    /// not a token, a nullable, a list, or a nested-group struct. Only such fields are
-    /// yielded directly by <c>Children()</c>.
+    /// not a token, a nullable, a list, or a nested-group struct.
     /// </summary>
     private static bool IsScalarNodeType(string typeName)
     {

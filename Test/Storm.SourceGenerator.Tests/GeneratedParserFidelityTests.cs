@@ -37,10 +37,10 @@ public sealed class GeneratedParserFidelityTests
         "rule Run = first:Elem (rest:Elem)*;\n" +
         "rule Tuple = LP first:Elem COMMA rest:Elem (COMMA additional:Elem)* RP;\n" +
         "rule Call = name:IDENT TypeArgs?;\n" +
-        "rule Held = name:IDENT held:(COMMA (SEMI | LP) RP)?;\n" +
+        "rule Held = name:IDENT held:(COMMA (SEMI | LP) inner:Elem RP)?;\n" +
         "rule Nested = first:Elem (LT (COMMA rest:Elem)* GT)?;\n" +
         "rule Pairs = head:IDENT (key:IDENT COMMA? value:IDENT)*;\n" +
-        "rule Nest = head:IDENT (key:IDENT (LT value:IDENT GT)? SEMI)*;\n" +
+        "rule Nest = head:IDENT (key:IDENT (LT value:Elem GT)? SEMI)*;\n" +
         "rule Parens = first:Elem (COMMA (LP Elem RP))*;\n" +
         "rule Stated = first:Elem (COMMA rest:Elem SEMI)*;\n" +
         "rule Head = first:IDENT LT;\n" +
@@ -88,8 +88,8 @@ public sealed class GeneratedParserFidelityTests
 
     [Theory]
     [InlineData("Call", "a<b>", 4, "<b>")]
-    [InlineData("Held", "a,;)", 4, "")]
-    [InlineData("Held", "a,;", 1, "")]
+    [InlineData("Held", "a,;b)", 5, "b")]
+    [InlineData("Held", "a,;b", 1, "")]
     [InlineData("Nested", "a<,b,c>", 7, "a b c")]
     [InlineData("Pairs", "a b,c d e", 6, "")]
     [InlineData("Parens", "a,(b),(c)", 9, "a b c")]
@@ -103,18 +103,23 @@ public sealed class GeneratedParserFidelityTests
     }
 
     [Fact]
-    public void AGroupNestedInARepeatedGroupIsBuiltInEachRoundThatHoldsIt()
+    public void AGroupNestedInARepeatedGroupIsBuiltInEachRoundThatHoldsIt_AndItsNodeIsAChild()
     {
-        var node = Parse(PlainParser.Value, "Nest", "a b<c>;d;", out var position)!;
+        const string input = "a b<c>;d;";
+        var node = Parse(PlainParser.Value, "Nest", input, out var position)!;
         var rounds = ((IEnumerable)node.GetType().GetProperty("Group0")!.GetValue(node)!).Cast<object>().Select(round =>
         {
             var nested = round.GetType().GetField("Group0")!.GetValue(round);
             var value = nested?.GetType().GetField("Value")!.GetValue(nested);
 
-            return LexemeOf(round.GetType().GetField("Key")!.GetValue(round)) + ":" + (value == null ? "-" : LexemeOf(value));
+            return LexemeOf(round.GetType().GetField("Key")!.GetValue(round)) + ":" + (value == null ? "-" : TextOf(value, input));
         });
+        _ = node.GetType().GetMethod("SetParentLinks")!.Invoke(node, null);
+        var children = ChildrenOf(node).ToList();
 
         Assert.Equal((8, "b:c d:-"), (position, string.Join(" ", rounds)));
+        Assert.Equal("c", string.Join(" ", children.Select(child => TextOf(child, input))));
+        Assert.All(children, child => Assert.Same(node, child!.GetType().GetProperty("Parent")!.GetValue(child)));
     }
 
     [Fact]
