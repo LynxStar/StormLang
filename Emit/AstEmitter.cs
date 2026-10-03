@@ -306,6 +306,7 @@ public static partial class AstEmitter
         var nodeTypeName = rule.Name + "Node";
         var baseType = "SyntaxNode";
         var properties = CollectProperties(rule.Alternatives[0], nodeTypeName, context.EmitObsoleteShims, out var groupStructs, out var shims);
+        GuardWhatLaterAlternativesLeaveUnset(rule, nodeTypeName, properties);
 
         // Check for trait interfaces
         var interfaces = new List<string>();
@@ -645,13 +646,13 @@ public static partial class AstEmitter
         // list that used to sit alongside the projected Group0).
         CollectUnlabeledProperties(alt.Expression, alt.FieldLabels, properties, usedNames, groupSequences);
 
-        // A labelled reference under an optional keeps the non-nullable type its readers were written against, so
-        // Children() guards its absence rather than the type admitting it.
-        var insideOptional = new HashSet<ExpressionIR>();
-        CollectInside(alt.Expression, expr => expr is OptionalIR, false, insideOptional);
+        // A property an alternative may leave unset keeps the non-nullable type its readers were written against, so
+        // Children() guards it rather than the type admitting it.
+        var skippable = new HashSet<ExpressionIR>();
+        CollectInside(alt.Expression, expr => expr is OptionalIR or ZeroOrMoreIR, false, skippable);
         foreach(var property in properties.Where(property => property.IsNodeType && !property.IsList && !property.IsNullable))
         {
-            property.MayBeAbsent = property.Source != null && insideOptional.Contains(property.Source);
+            property.MayBeAbsent = property.Source != null && skippable.Contains(property.Source);
         }
 
         return properties;

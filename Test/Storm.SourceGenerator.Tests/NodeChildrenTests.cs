@@ -28,9 +28,13 @@ public sealed class NodeChildrenTests
     [InlineData("head:IDENT (key:IDENT (LT value:Elem GT)? SEMI)*", "foreach (var groupItem in Group0) { if (groupItem.Group0 != null) { yield return groupItem.Group0.Value.Value; } }")]
     [InlineData("(first:Elem (COMMA rest:Elem)*)*", "foreach (var groupItem in Group0) { yield return groupItem.First; foreach (var groupItem1 in groupItem.Group0) { yield return groupItem1.Rest; } }")]
     [InlineData("head:Elem (key:IDENT COMMA? value:IDENT)*", "yield return Head;")]
+    [InlineData("a:Elem COMMA | SEMI", "if (A != null) { yield return A; }")]
+    [InlineData("a:Elem COMMA | a:Elem SEMI", "yield return A;")]
+    [InlineData("a:Elem COMMA | SEMI (COMMA a:Elem)*", "if (A != null) { yield return A; }")]
+    [InlineData("a:Elem COMMA | SEMI (COMMA a:Elem)+", "yield return A;")]
     public void ChildrenYieldsEachNodeTheNodeHoldsOnce(string shape, string children)
     {
-        var item = new RuleIR("Item", [Alternative(shape)]);
+        var item = new RuleIR("Item", shape.Split(" | ").Select(Alternative).ToList());
         var ast = AstEmitter.EmitAstNodes(new EmissionContext("Test.Generated", "Test", new GrammarIR([Ident, Comma, Lt, Gt, Semi], [Elem, item]), emitObsoleteShims: false));
 
         Assert.Equal(children, ChildrenOf(ast, "ItemNode"));
@@ -105,6 +109,11 @@ public sealed class NodeChildrenTests
                 reference("head"),
                 new ZeroOrMoreIR(new SequenceIR([token(Ident, "key"), new OptionalIR(token(Comma)), token(Ident, "value")])),
             ]),
+            "a:Elem COMMA" => new SequenceIR([reference("a"), token(Comma)]),
+            "a:Elem SEMI" => new SequenceIR([reference("a"), token(Semi)]),
+            "SEMI" => token(Semi),
+            "SEMI (COMMA a:Elem)*" => new SequenceIR([token(Semi), new ZeroOrMoreIR(new SequenceIR([token(Comma), reference("a")]))]),
+            "SEMI (COMMA a:Elem)+" => new SequenceIR([token(Semi), new OneOrMoreIR(new SequenceIR([token(Comma), reference("a")]))]),
             _ => throw new ArgumentOutOfRangeException(nameof(shape), shape, null),
         };
 

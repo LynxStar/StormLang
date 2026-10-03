@@ -36,6 +36,17 @@ public sealed class NodeSlotTests
         Assert.Equal(filled, string.Join(" ", slots.Select(slot => slot.Name + (slot.Appends ? "+=" : "=") + names[slot.Source])));
     }
 
+    [Fact]
+    public void ALaterUnnamedAlternativeFillsOnlyThePropertiesTheFirstDeclares()
+    {
+        var (first, _) = Alternative("name:IDENT Elem?");
+        var (later, names) = Alternative("name:IDENT held:(COMMA Elem)?");
+
+        var slots = AstEmitter.NodeSlots(new RuleIR("Item", [first, later]), later, "ItemNode");
+
+        Assert.Equal("Name=name", string.Join(" ", slots.Select(slot => slot.Name + (slot.Appends ? "+=" : "=") + names[slot.Source])));
+    }
+
     // Builds the shape directly: a label names its element, an unlabelled element is named after its token or rule.
     private static (RuleAlternativeIR Alternative, Dictionary<ExpressionIR, string> Names) Alternative(string shape)
     {

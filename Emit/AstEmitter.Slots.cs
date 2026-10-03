@@ -11,21 +11,43 @@ public static partial class AstEmitter
 {
     internal static IReadOnlyList<NodeSlot> NodeSlots(RuleIR rule, RuleAlternativeIR alternative, string nodeTypeName)
     {
-        var slots = CollectProperties(alternative, nodeTypeName, false, out _, out _)
-            .Where(property => property.Source != null)
+        return FilledProperties(rule, alternative, nodeTypeName)
             .Select(property => new NodeSlot(property.Name, property.TypeName, property.Source!, property.Appends))
             .ToList();
+    }
 
-        var sharesFirstAlternativeNode = !rule.Alternatives.Any(candidate => candidate.AlternativeName != null || candidate.Expression is InlineBlockIR);
-        if(!sharesFirstAlternativeNode || alternative == rule.Alternatives[0])
+    private static IEnumerable<PropertyInfo> FilledProperties(RuleIR rule, RuleAlternativeIR alternative, string nodeTypeName)
+    {
+        var filled = CollectProperties(alternative, nodeTypeName, false, out _, out _).Where(property => property.Source != null);
+        if(!SharesFirstAlternativeNode(rule) || alternative == rule.Alternatives[0])
         {
-            return slots;
+            return filled;
         }
 
         var declared = new HashSet<(string Name, string TypeName)>(CollectProperties(rule.Alternatives[0], nodeTypeName, false, out _, out _)
             .Select(property => (property.Name, property.TypeName)));
 
-        return slots.Where(slot => declared.Contains((slot.Name, slot.TypeName))).ToList();
+        return filled.Where(property => declared.Contains((property.Name, property.TypeName)));
+    }
+
+    private static bool SharesFirstAlternativeNode(RuleIR rule)
+    {
+        return !rule.Alternatives.Any(candidate => candidate.AlternativeName != null || candidate.Expression is InlineBlockIR);
+    }
+
+    private static void GuardWhatLaterAlternativesLeaveUnset(RuleIR rule, string nodeTypeName, List<PropertyInfo> properties)
+    {
+        foreach(var alternative in rule.Alternatives.Skip(1))
+        {
+            var certain = new HashSet<(string Name, string TypeName)>(FilledProperties(rule, alternative, nodeTypeName)
+                .Where(property => !property.MayBeAbsent)
+                .Select(property => (property.Name, property.TypeName)));
+
+            foreach(var property in properties.Where(property => property.IsNodeType && !property.IsList && !property.IsNullable && !certain.Contains((property.Name, property.TypeName))))
+            {
+                property.MayBeAbsent = true;
+            }
+        }
     }
 
     internal static ExpressionIR? Representative(ExpressionIR labelled, ICollection<ExpressionIR> groupSequences)
