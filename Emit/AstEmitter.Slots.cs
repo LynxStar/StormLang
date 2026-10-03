@@ -24,10 +24,27 @@ public static partial class AstEmitter
             return filled;
         }
 
-        var declared = new HashSet<(string Name, string TypeName)>(CollectProperties(rule.Alternatives[0], nodeTypeName, false, out _, out _)
-            .Select(property => (property.Name, property.TypeName)));
+        var declared = CollectProperties(rule.Alternatives[0], nodeTypeName, false, out _, out _).ToDictionary(Key);
 
-        return filled.Where(property => declared.Contains((property.Name, property.TypeName)));
+        return filled.Where(property => declared.TryGetValue(Key(property), out var first) && FillsOnce(property, first, declared));
+    }
+
+    // Children() is the first alternative's, so a later one fills a property only where the node stays yielded once: one
+    // of the first's children, unless the later alternative's own owner of that node fills a child too, and a forwarding
+    // label only beside the owner it forwards there, since a forwarding label alone holds a node nothing yields.
+    private static bool FillsOnce(PropertyInfo later, PropertyInfo first, Dictionary<(string Name, string TypeName), PropertyInfo> declared)
+    {
+        if(first.IsChild)
+        {
+            return later.IsChild || later.Owner == null || !declared.TryGetValue(Key(later.Owner), out var owner) || !owner.IsChild;
+        }
+
+        return !later.IsChild && later.Owner != null && first.Owner != null && Key(later.Owner) == Key(first.Owner);
+    }
+
+    private static (string Name, string TypeName) Key(PropertyInfo property)
+    {
+        return (property.Name, property.TypeName);
     }
 
     private static bool SharesFirstAlternativeNode(RuleIR rule)
@@ -41,9 +58,9 @@ public static partial class AstEmitter
         {
             var certain = new HashSet<(string Name, string TypeName)>(FilledProperties(rule, alternative, nodeTypeName)
                 .Where(property => !property.MayBeAbsent)
-                .Select(property => (property.Name, property.TypeName)));
+                .Select(Key));
 
-            foreach(var property in properties.Where(property => property.IsNodeType && !property.IsList && !property.IsNullable && !certain.Contains((property.Name, property.TypeName))))
+            foreach(var property in properties.Where(property => property.IsNodeType && !property.IsList && !property.IsNullable && !certain.Contains(Key(property))))
             {
                 property.MayBeAbsent = true;
             }
@@ -91,7 +108,7 @@ public static partial class AstEmitter
         };
 
         return inner != null && source is RuleRefIR reference
-            && (groupSequences.Contains(inner) || (labels.Any(label => ReferenceEquals(label.Expression, reference)) && !repeatedRuleRefs.Contains(reference)));
+            && (groupSequences.Contains(inner) || (FindLabel(reference, labels) != null && !repeatedRuleRefs.Contains(reference)));
     }
 
     private static PropertyInfo RepeatedLabelProperty(ExpressionIR labelled, string propName)
