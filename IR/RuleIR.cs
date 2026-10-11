@@ -9,7 +9,8 @@ namespace Storm.SourceGenerator.IR;
 public sealed class RuleIR
 {
     /// <summary>
-    /// The rule name as declared in the grammar.
+    /// The rule name as declared in the grammar, or the identifier a namespaced
+    /// rule is generated under; <see cref="DisplayName"/> keeps its qualified name.
     /// </summary>
     public string Name { get; }
 
@@ -24,11 +25,14 @@ public sealed class RuleIR
     /// </summary>
     public bool IsMemo { get; }
 
-    public RuleIR(string name, IReadOnlyList<RuleAlternativeIR> alternatives, bool isMemo = false)
+    public string DisplayName { get; }
+
+    public RuleIR(string name, IReadOnlyList<RuleAlternativeIR> alternatives, bool isMemo = false, string? displayName = null)
     {
         Name = name;
         Alternatives = alternatives;
         IsMemo = isMemo;
+        DisplayName = displayName ?? name;
     }
 }
 

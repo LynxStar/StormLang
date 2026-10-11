@@ -9,7 +9,9 @@ public sealed class TokenIR
 {
     /// <summary>
     /// The token name as declared in the grammar (or a synthetic name
-    /// for anonymous string literals materialized from rule expressions).
+    /// for anonymous string literals materialized from rule expressions),
+    /// or the identifier a namespaced token is generated under;
+    /// <see cref="DisplayName"/> keeps its qualified name.
     /// </summary>
     public string Name { get; }
 
@@ -48,7 +50,9 @@ public sealed class TokenIR
     /// </summary>
     public ModeActionIR ModeAction { get; }
 
-    public TokenIR(string name, ExpressionIR expression, bool isHidden, int declarationIndex, bool isSynthetic = false, string mode = "default", ModeActionIR? modeAction = null)
+    public string DisplayName { get; }
+
+    public TokenIR(string name, ExpressionIR expression, bool isHidden, int declarationIndex, bool isSynthetic = false, string mode = "default", ModeActionIR? modeAction = null, string? displayName = null)
     {
         Name = name;
         Expression = expression;
@@ -57,5 +61,6 @@ public sealed class TokenIR
         IsSynthetic = isSynthetic;
         Mode = mode;
         ModeAction = modeAction ?? new NoModeActionIR();
+        DisplayName = displayName ?? name;
     }
 }

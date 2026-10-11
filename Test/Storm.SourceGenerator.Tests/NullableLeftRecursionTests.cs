@@ -135,7 +135,7 @@ public sealed class NullableLeftRecursionTests
     [Fact]
     public void ADeclarationAlsoImportedUnderAnAliasIsNamedPlainly()
     {
-        // A file imported both plainly and under an alias contributes the same declaration twice.
+        // A file imported both plainly and under an alias contributes its declaration once, under its plain name.
         var grammar = new Grammar()
             .Rule("R", Alt(Qualified("Ns", "Wrap"), B))
             .Rule("Wrap", Seq(Opt(A), R))
@@ -405,9 +405,10 @@ public sealed class NullableLeftRecursionTests
     }
 
     /// <summary>
-    /// The three inputs the pass reads from a <c>StormGrammar</c>, kept the way the grammar keeps them: every
-    /// declaration in order, namespaced ones among them, and a lookup that tries plain names before qualified
-    /// ones. Each declaration sits on its own line so a diagnostic's line names the rule it points at.
+    /// The two inputs the pass reads from a <c>StormGrammar</c>, kept the way the grammar keeps them: every
+    /// declaration in order under its effective name, namespaced ones among them under their qualified names, and a
+    /// lookup that tries plain names before qualified ones, where an alias of a plainly imported declaration also
+    /// reaches it. Each declaration sits on its own line so a diagnostic's line names the rule it points at.
     /// </summary>
     private sealed class Grammar
     {
@@ -442,7 +443,7 @@ public sealed class NullableLeftRecursionTests
 
         public Grammar Namespaced(string qualifier, string name, StormExpression body)
         {
-            var rule = new StormRuleDecl(name, body, 0, NextLine, 1);
+            var rule = new StormRuleDecl(qualifier + "." + name, body, 0, NextLine, 1);
             declarations.Add(rule);
             namespaced[qualifier + "." + name] = rule;
             return this;
@@ -450,9 +451,7 @@ public sealed class NullableLeftRecursionTests
 
         public Grammar AlsoNamespaced(string qualifier, string name)
         {
-            var rule = plain[name];
-            declarations.Add(rule);
-            namespaced[qualifier + "." + name] = rule;
+            namespaced[qualifier + "." + name] = plain[name];
             return this;
         }
 
@@ -463,7 +462,7 @@ public sealed class NullableLeftRecursionTests
 
         public List<StormDiagnostic> Check()
         {
-            return LeftRecursionPass.Run(declarations, namespaced, Lookup);
+            return LeftRecursionPass.Run(declarations, Lookup);
         }
 
         private StormDeclaration? Lookup(string name)

@@ -168,7 +168,7 @@ public sealed class StormImportResolver
     /// <summary>
     /// Resolves an import path relative to the importing file's directory (R6.9).
     /// </summary>
-    private static string ResolveImportPath(string importingFilePath, string importPath)
+    internal static string ResolveImportPath(string importingFilePath, string importPath)
     {
         var importingDir = GetDirectoryName(importingFilePath);
         var combined = CombinePath(importingDir, importPath);

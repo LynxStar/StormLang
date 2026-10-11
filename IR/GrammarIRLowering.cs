@@ -50,12 +50,13 @@ public static class GrammarIRLowering
         }
 
         var diagnostics = new List<StormDiagnostic>();
+        var identifiers = EmittedNames.Of(grammar);
 
         // ---------------------------------------------------------------
         // 0. Scan for StormModeDecl nodes to build mode name list and
         //    a mapping from declaration name → enclosing mode name.
         // ---------------------------------------------------------------
-        var modeNames = new List<string>(grammar.ModeNames);
+        var modeNames = grammar.ModeNames.Select(mode => EmittedNames.Of(identifiers, mode)).ToList();
         var declNameToMode = new Dictionary<string, string>(StringComparer.Ordinal);
 
         foreach(var decl in grammar.Declarations)
@@ -82,15 +83,6 @@ public static class GrammarIRLowering
             }
         }
 
-        // Also check namespaced declarations for fragments
-        foreach(var kvp in grammar.NamespacedDeclarations)
-        {
-            if(kvp.Value is StormFragmentDecl)
-            {
-                fragmentsByName[("default", kvp.Key)] = kvp.Value;
-            }
-        }
-
         // ---------------------------------------------------------------
         // 2. Build TokenIR entries (explicit tokens with fragments inlined)
         // ---------------------------------------------------------------
@@ -104,30 +96,12 @@ public static class GrammarIRLowering
             {
                 var isHidden = decl is StormHiddenTokenDecl;
                 var mode = declNameToMode.TryGetValue(decl.Name, out var m) ? m : "default";
-                var modeAction = ConvertModeAction(decl);
+                var modeAction = ConvertModeAction(decl, identifiers);
                 var inlinedExpr = InlineFragments(decl.Body, fragmentsByName, mode, new HashSet<string>(StringComparer.Ordinal), diagnostics);
-                var tokenIR = new TokenIR(decl.Name, inlinedExpr, isHidden, tokenIndex, mode: mode, modeAction: modeAction);
+                var tokenIR = new TokenIR(EmittedNames.Of(identifiers, decl.Name), inlinedExpr, isHidden, tokenIndex, mode: EmittedNames.Of(identifiers, mode), modeAction: modeAction, displayName: decl.Name);
                 tokenIRs.Add(tokenIR);
                 tokensByName[decl.Name] = tokenIR;
                 tokenIndex++;
-            }
-        }
-
-        // Also process namespaced token declarations
-        foreach(var kvp in grammar.NamespacedDeclarations)
-        {
-            if(kvp.Value is StormTokenDecl or StormHiddenTokenDecl)
-            {
-                if(!tokensByName.ContainsKey(kvp.Key))
-                {
-                    var isHidden = kvp.Value is StormHiddenTokenDecl;
-                    var modeAction = ConvertModeAction(kvp.Value);
-                    var inlinedExpr = InlineFragments(kvp.Value.Body, fragmentsByName, "default", new HashSet<string>(StringComparer.Ordinal), diagnostics);
-                    var tokenIR = new TokenIR(kvp.Key, inlinedExpr, isHidden, tokenIndex, mode: "default", modeAction: modeAction);
-                    tokenIRs.Add(tokenIR);
-                    tokensByName[kvp.Key] = tokenIR;
-                    tokenIndex++;
-                }
             }
         }
 
@@ -144,20 +118,9 @@ public static class GrammarIRLowering
             {
                 // Create a shell with empty alternatives — we'll fill them in step 5
                 var isMemo = ruleDecl.IsMemo;
-                var shell = new RuleIR(decl.Name, new List<RuleAlternativeIR>(), isMemo);
+                var shell = new RuleIR(EmittedNames.Of(identifiers, decl.Name), new List<RuleAlternativeIR>(), isMemo, displayName: decl.Name);
                 ruleShells[decl.Name] = shell;
                 ruleOrder.Add((decl.Name, decl));
-            }
-        }
-
-        foreach(var kvp in grammar.NamespacedDeclarations)
-        {
-            if(kvp.Value is StormRuleDecl nsRuleDecl && !ruleShells.ContainsKey(kvp.Key))
-            {
-                var isMemo = nsRuleDecl.IsMemo;
-                var shell = new RuleIR(kvp.Key, new List<RuleAlternativeIR>(), isMemo);
-                ruleShells[kvp.Key] = shell;
-                ruleOrder.Add((kvp.Key, kvp.Value));
             }
         }
 
@@ -374,7 +337,7 @@ public static class GrammarIRLowering
     /// <summary>
     /// Converts a <see cref="StormModeAction"/> from the AST to a <see cref="ModeActionIR"/>.
     /// </summary>
-    private static ModeActionIR ConvertModeAction(StormDeclaration decl)
+    private static ModeActionIR ConvertModeAction(StormDeclaration decl, IReadOnlyDictionary<string, string> identifiers)
     {
         var action = decl switch
         {
@@ -385,7 +348,7 @@ public static class GrammarIRLowering
 
         return action switch
         {
-            StormPushAction pushAction => new PushModeIR(pushAction.ModeName),
+            StormPushAction pushAction => new PushModeIR(EmittedNames.Of(identifiers, pushAction.ModeName)),
             StormPopAction => new PopModeIR(),
             _ => new NoModeActionIR()
         };

@@ -358,8 +358,8 @@ public class StormGrammarTests
         Assert.Equal("UnnamespacedToken", names[0]);
         // Then root declarations
         Assert.Equal("RootToken", names[1]);
-        // Then namespaced declarations last
-        Assert.Equal("NamespacedToken", names[2]);
+        // Then namespaced declarations last, under their qualified names
+        Assert.Equal("NS.NamespacedToken", names[2]);
     }
 
     [Fact]

@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Linq;
 using Storm.SourceGenerator.Diagnostics;
 using Storm.SourceGenerator.Frontend;
 
@@ -18,13 +19,16 @@ public sealed class StormGrammar
     /// unnamespaced imports first (in import-appearance order),
     /// then root declarations, then namespaced-only declarations last (R6.8).
     /// This ensures imported keyword tokens precede IDENTIFIER for
-    /// first-match-wins tiebreaking.
+    /// first-match-wins tiebreaking. Each appears once, a namespaced-only one
+    /// under its qualified name, and every name a declaration uses is the
+    /// effective name of what it means in the declaring file.
     /// </summary>
     public IReadOnlyList<StormDeclaration> Declarations { get; }
 
     /// <summary>
     /// Qualified name → declaration for namespaced imports.
-    /// Keys are of the form "Namespace.Name".
+    /// Keys are of the form "Namespace.Name", or "Outer.Inner.Name" for a
+    /// namespace imported by a namespaced file, one per alias that reaches it.
     /// </summary>
     public IReadOnlyDictionary<string, StormDeclaration> NamespacedDeclarations { get; }
 
@@ -120,13 +124,6 @@ public sealed class StormGrammar
         }
 
         var diagnostics = new List<StormDiagnostic>();
-        var declarations = new List<StormDeclaration>();
-        var namespacedDeclarations = new Dictionary<string, StormDeclaration>(StringComparer.Ordinal);
-        var declarationsByName = new Dictionary<string, StormDeclaration>(StringComparer.Ordinal);
-
-        // Track where each unnamespaced declaration name was first defined (for duplicate detection)
-        var nameToSourceLocation = new Dictionary<string, (string FilePath, StormDeclaration Decl)>(StringComparer.Ordinal);
-
         var failed = false;
 
         // Scan for grammar declarations across all files
@@ -172,69 +169,30 @@ public sealed class StormGrammar
             failed = true;
         }
 
-        // Track which files contribute only via namespaced imports
-        // We need to know which files are imported with a namespace alias
-        // so we can separate namespaced-only declarations
-
-        // First pass: determine which files are imported with namespace aliases
-        // and which are imported without (unnamespaced)
-        var rootPath = resolution.RootPath;
-        var rootFile = resolution.FilesByPath[rootPath];
-
-        // We need to walk the import tree to determine:
-        // 1. Which files contribute unnamespaced declarations (root + unnamespaced imports, recursively)
-        // 2. Which files contribute namespaced declarations (namespaced imports)
-        // 3. The order of contributions
-
-        // Collect namespaced declarations from the root file's namespaced imports
-        // and unnamespaced declarations from root + unnamespaced imports in DFS pre-order
-
-        var visitedForMerge = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-        var namespacedFiles = new List<(string Alias, string Path, StormFile File)>();
-
-        // Process root file and its unnamespaced imports recursively
-        CollectDeclarations(
-            rootPath,
-            rootFile,
-            resolution,
-            visitedForMerge,
-            declarations,
-            namespacedFiles,
-            declarationsByName,
-            nameToSourceLocation,
-            diagnostics,
-            ref failed);
-
-        // Now add namespaced declarations (R6.8: namespaced-only declarations last)
-        var namespacedDeclsForOrder = new List<StormDeclaration>();
-        foreach(var (alias, path, file) in namespacedFiles)
+        var naming = EffectiveNames.Assign(resolution);
+        var unresolved = new List<StormDiagnostic>();
+        var rewritten = new Dictionary<StormDeclaration, StormDeclaration>(DeclarationIdentity.Instance);
+        foreach(var (declaration, scope, filePath) in naming.Owners.Where(owner => owner.Declaration is not StormModeDecl))
         {
-            foreach(var decl in file.Declarations)
-            {
-                var qualifiedName = alias + "." + decl.Name;
-                if(namespacedDeclarations.ContainsKey(qualifiedName))
-                {
-                    // Duplicate qualified name — this is an error
-                    var existing = namespacedDeclarations[qualifiedName];
-                    diagnostics.Add(new StormDiagnostic(
-                        StormDiagnosticIds.STORM_DUPLICATE_NAME,
-                        StormDiagnosticSeverity.Error,
-                        $"Duplicate qualified declaration name '{qualifiedName}': first declared at {existing.Line}:{existing.Column}, redeclared at {decl.Line}:{decl.Column} in '{path}'",
-                        path,
-                        decl.Line,
-                        decl.Column));
-                    failed = true;
-                }
-                else
-                {
-                    namespacedDeclarations[qualifiedName] = decl;
-                    namespacedDeclsForOrder.Add(decl);
-                }
-            }
+            var rewriter = new DeclarationRewriter(scope, naming.ScopeOf, naming.Names, ReferenceEquals(scope, naming.Root) ? null : unresolved);
+            rewritten[declaration] = rewriter.Rewrite(declaration, naming.Names[declaration], filePath);
         }
 
-        // Append namespaced declarations to the effective order (R6.8)
-        declarations.AddRange(namespacedDeclsForOrder);
+        foreach(var mode in naming.Owners.Select(owner => owner.Declaration).OfType<StormModeDecl>())
+        {
+            var inner = mode.Declarations.Select(declaration => rewritten.TryGetValue(declaration, out var renamed) ? renamed : declaration).ToList();
+            rewritten[mode] = naming.Names[mode] == mode.Name && inner.Zip(mode.Declarations, ReferenceEquals).All(same => same)
+                ? mode
+                : mode with { Name = naming.Names[mode], Declarations = inner };
+        }
+
+        diagnostics.AddRange(naming.Diagnostics);
+        diagnostics.AddRange(unresolved);
+        failed |= diagnostics.Any(diagnostic => diagnostic.Severity == StormDiagnosticSeverity.Error);
+
+        var declarations = naming.Owners.Select(owner => rewritten[owner.Declaration]).ToList();
+        var declarationsByName = naming.Root.Declarations.ToDictionary(declared => declared.Name, declared => rewritten[declared.Declaration], StringComparer.Ordinal);
+        var namespacedDeclarations = naming.Spellings.ToDictionary(spelling => spelling.Key, spelling => rewritten[spelling.Value], StringComparer.Ordinal);
 
         // Build mode names list: always include "default", plus any StormModeDecl names
         var modeNames = new List<string> { "default" };
@@ -254,162 +212,5 @@ public sealed class StormGrammar
             !failed,
             grammarName,
             modeNames);
-    }
-
-    /// <summary>
-    /// Recursively collects declarations from a file and its unnamespaced imports in DFS pre-order.
-    /// Namespaced imports are collected separately for later processing.
-    /// </summary>
-    private static void CollectDeclarations(
-        string filePath,
-        StormFile file,
-        ImportResolutionResult resolution,
-        HashSet<string> visitedForMerge,
-        List<StormDeclaration> declarations,
-        List<(string Alias, string Path, StormFile File)> namespacedFiles,
-        Dictionary<string, StormDeclaration> declarationsByName,
-        Dictionary<string, (string FilePath, StormDeclaration Decl)> nameToSourceLocation,
-        List<StormDiagnostic> diagnostics,
-        ref bool failed)
-    {
-        if(!visitedForMerge.Add(filePath))
-        {
-            return;
-        }
-
-        // Process unnamespaced imports first (they appear before declarations
-        // in the source), then the file's own declarations. This ensures that
-        // imported keyword tokens precede IDENTIFIER in declaration order,
-        // giving keywords priority via first-match-wins tiebreaking (R6.8).
-        foreach(var import in file.Imports)
-        {
-            var resolvedPath = ResolveImportPath(filePath, import.Path);
-
-            if(!resolution.FilesByPath.ContainsKey(resolvedPath))
-            {
-                // File wasn't resolved — diagnostic already emitted by StormImportResolver
-                continue;
-            }
-
-            var importedFile = resolution.FilesByPath[resolvedPath];
-
-            if(import.Alias != null)
-            {
-                // Namespaced import — collect for later processing
-                namespacedFiles.Add((import.Alias, resolvedPath, importedFile));
-            }
-            else
-            {
-                // Unnamespaced import — recursively merge declarations
-                CollectDeclarations(
-                    resolvedPath,
-                    importedFile,
-                    resolution,
-                    visitedForMerge,
-                    declarations,
-                    namespacedFiles,
-                    declarationsByName,
-                    nameToSourceLocation,
-                    diagnostics,
-                    ref failed);
-            }
-        }
-
-        // Now process this file's own declarations.
-        foreach(var decl in file.Declarations)
-        {
-            // Handle mode declarations: add the mode itself and each inner declaration
-            if(decl is StormModeDecl modeDecl)
-            {
-                // Add the mode declaration itself (for mode name tracking)
-                if(nameToSourceLocation.TryGetValue(modeDecl.Name, out var existingMode))
-                {
-                    diagnostics.Add(new StormDiagnostic(
-                        StormDiagnosticIds.STORM_DUPLICATE_NAME,
-                        StormDiagnosticSeverity.Error,
-                        $"Duplicate declaration name '{modeDecl.Name}': first declared in '{existingMode.FilePath}' at {existingMode.Decl.Line}:{existingMode.Decl.Column}, redeclared in '{filePath}' at {modeDecl.Line}:{modeDecl.Column}",
-                        filePath,
-                        modeDecl.Line,
-                        modeDecl.Column));
-                    failed = true;
-                }
-                else
-                {
-                    nameToSourceLocation[modeDecl.Name] = (filePath, modeDecl);
-                    declarationsByName[modeDecl.Name] = modeDecl;
-                    declarations.Add(modeDecl);
-                }
-
-                // Add each inner declaration with its source position preserved
-                foreach(var innerDecl in modeDecl.Declarations)
-                {
-                    if(nameToSourceLocation.TryGetValue(innerDecl.Name, out var existingInner))
-                    {
-                        diagnostics.Add(new StormDiagnostic(
-                            StormDiagnosticIds.STORM_DUPLICATE_NAME,
-                            StormDiagnosticSeverity.Error,
-                            $"Duplicate declaration name '{innerDecl.Name}': first declared in '{existingInner.FilePath}' at {existingInner.Decl.Line}:{existingInner.Decl.Column}, redeclared in '{filePath}' at {innerDecl.Line}:{innerDecl.Column}",
-                            filePath,
-                            innerDecl.Line,
-                            innerDecl.Column));
-                        failed = true;
-                    }
-                    else
-                    {
-                        nameToSourceLocation[innerDecl.Name] = (filePath, innerDecl);
-                        declarationsByName[innerDecl.Name] = innerDecl;
-                        declarations.Add(innerDecl);
-                    }
-                }
-            }
-            else
-            {
-                if(nameToSourceLocation.TryGetValue(decl.Name, out var existing))
-                {
-                    diagnostics.Add(new StormDiagnostic(
-                        StormDiagnosticIds.STORM_DUPLICATE_NAME,
-                        StormDiagnosticSeverity.Error,
-                        $"Duplicate declaration name '{decl.Name}': first declared in '{existing.FilePath}' at {existing.Decl.Line}:{existing.Decl.Column}, redeclared in '{filePath}' at {decl.Line}:{decl.Column}",
-                        filePath,
-                        decl.Line,
-                        decl.Column));
-                    failed = true;
-                }
-                else
-                {
-                    nameToSourceLocation[decl.Name] = (filePath, decl);
-                    declarationsByName[decl.Name] = decl;
-                    declarations.Add(decl);
-                }
-            }
-        }
-    }
-
-    /// <summary>
-    /// Resolves an import path relative to the importing file's directory.
-    /// </summary>
-    private static string ResolveImportPath(string importingFilePath, string importPath)
-    {
-        var importingDir = GetDirectoryName(importingFilePath);
-        var combined = CombinePath(importingDir, importPath);
-        return StormImportResolver.CanonicalizePath(combined);
-    }
-
-    private static string GetDirectoryName(string path)
-    {
-        path = path.Replace('\\', '/');
-        var lastSlash = path.LastIndexOf('/');
-        return lastSlash >= 0
-            ? path.Substring(0, lastSlash)
-            : "."
-            ;
-    }
-
-    private static string CombinePath(string directory, string relativePath)
-    {
-        return string.IsNullOrEmpty(directory) || directory == "."
-            ? relativePath
-            : directory + "/" + relativePath
-            ;
     }
 }

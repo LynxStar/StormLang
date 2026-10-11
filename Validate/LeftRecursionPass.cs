@@ -17,44 +17,19 @@ public static class LeftRecursionPass
 {
     public static List<StormDiagnostic> Run(StormGrammar grammar)
     {
-        return Run(grammar.Declarations, grammar.NamespacedDeclarations, grammar.LookupByName);
+        return Run(grammar.Declarations, grammar.LookupByName);
     }
 
-    internal static List<StormDiagnostic> Run(
-        IReadOnlyList<StormDeclaration> declarations,
-        IReadOnlyDictionary<string, StormDeclaration> namespacedDeclarations,
-        Func<string, StormDeclaration?> lookup)
+    internal static List<StormDiagnostic> Run(IReadOnlyList<StormDeclaration> declarations, Func<string, StormDeclaration?> lookup)
     {
         var graph = new LeftCallGraph(declarations, lookup);
-        var names = graph.Rules.Select(rule => NameOf(rule, namespacedDeclarations, lookup)).ToList();
-        var search = new CycleSearch(graph, names);
+        var search = new CycleSearch(graph, graph.Rules.Select(rule => rule.Name).ToList());
         for(var rule = 0; rule < graph.Rules.Count; rule++)
         {
             search.From(rule);
         }
 
         return search.Diagnostics;
-    }
-
-    private static string NameOf(
-        StormRuleDecl rule,
-        IReadOnlyDictionary<string, StormDeclaration> namespacedDeclarations,
-        Func<string, StormDeclaration?> lookup)
-    {
-        if(ReferenceEquals(lookup(rule.Name), rule))
-        {
-            return rule.Name;
-        }
-
-        foreach(var entry in namespacedDeclarations)
-        {
-            if(ReferenceEquals(entry.Value, rule))
-            {
-                return entry.Key;
-            }
-        }
-
-        return rule.Name;
     }
 
     private sealed class CycleSearch

@@ -82,7 +82,7 @@ public static class MemoizationAnalysisPass
                     diagnostics.Add(new StormDiagnostic(
                         StormDiagnosticIds.STORM_MEMO_IGNORED,
                         StormDiagnosticSeverity.Warning,
-                        $"'@memo' on rule '{rule.Name}' ignored: rule is not speculative-safe",
+                        $"'@memo' on rule '{rule.DisplayName}' ignored: rule is not speculative-safe",
                         null, 0, 0));
                 }
             }

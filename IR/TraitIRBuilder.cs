@@ -42,6 +42,8 @@ public static class TraitIRBuilder
     /// </summary>
     public static BuildResult Build(StormGrammar grammar)
     {
+        var identifiers = EmittedNames.Of(grammar);
+
         // Step 1: Build TraitIR for each StormTraitDecl (resolve field types to IsToken flag)
         var traitIRsByName = new Dictionary<string, TraitIR>();
         var traitDeclOrder = new List<StormTraitDecl>();
@@ -63,11 +65,11 @@ public static class TraitIRBuilder
             foreach(var field in traitDecl.Fields)
             {
                 var isToken = ResolveIsToken(field.TypeName, grammar);
-                fields.Add(new TraitFieldIR(field.FieldName, field.TypeName, isToken, field.Cardinality));
+                fields.Add(new TraitFieldIR(field.FieldName, EmittedNames.Of(identifiers, field.TypeName), isToken, field.Cardinality));
             }
 
             // Placeholder with empty composed traits; resolved in second pass
-            var traitIR = new TraitIR(traitDecl.Name, fields, new List<TraitIR>());
+            var traitIR = new TraitIR(EmittedNames.Of(identifiers, traitDecl.Name), fields, new List<TraitIR>());
             traitIRsByName[traitDecl.Name] = traitIR;
         }
 
@@ -101,10 +103,10 @@ public static class TraitIRBuilder
                 var resolvedTraits = ResolveBindings(ruleDecl.TraitBindings!, traitIRsByName);
                 if(resolvedTraits.Count > 0)
                 {
-                    AddTraitsToRule(ruleTraitBindings, ruleDecl.Name, resolvedTraits);
+                    AddTraitsToRule(ruleTraitBindings, EmittedNames.Of(identifiers, ruleDecl.Name), resolvedTraits);
 
                     // Step 3: Resolve inline block propagation
-                    PropagateInlineBlockTraits(ruleDecl, resolvedTraits, grammar, ruleTraitBindings);
+                    PropagateInlineBlockTraits(ruleDecl, resolvedTraits, grammar, identifiers, ruleTraitBindings);
                 }
             }
         }
@@ -122,7 +124,7 @@ public static class TraitIRBuilder
                         if(resolvedTraits.Count > 0)
                         {
                             // Key format: "RuleName.AlternativeName" to distinguish from rule-level bindings
-                            var key = $"{ruleDecl.Name}.{namedAlt.AlternativeName}";
+                            var key = $"{EmittedNames.Of(identifiers, ruleDecl.Name)}.{namedAlt.AlternativeName}";
                             AddTraitsToRule(ruleTraitBindings, key, resolvedTraits);
                         }
                     }
@@ -166,6 +168,7 @@ public static class TraitIRBuilder
         StormRuleDecl ruleDecl,
         List<TraitIR> resolvedTraits,
         StormGrammar grammar,
+        IReadOnlyDictionary<string, string> identifiers,
         Dictionary<string, List<TraitIR>> ruleTraitBindings)
     {
         var inlineBlock = GetInlineBlockExpr(ruleDecl.Body);
@@ -189,7 +192,7 @@ public static class TraitIRBuilder
                 continue;
             }
 
-            AddTraitsToRule(ruleTraitBindings, targetName, resolvedTraits);
+            AddTraitsToRule(ruleTraitBindings, EmittedNames.Of(identifiers, targetName), resolvedTraits);
         }
     }
 

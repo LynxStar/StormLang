@@ -98,11 +98,11 @@ internal sealed class UnemittableShapes
                 break;
 
             case RuleRefIR reference when structuralHome != null && label == null && reference != structuralHome:
-                found.Add($"Rule '{rule}' parses an unlabelled '{reference.Rule.Name}' inside a repeated or optional group, where no field of the group keeps its node: label it");
+                found.Add($"Rule '{rule}' parses an unlabelled '{reference.Rule.DisplayName}' inside a repeated or optional group, where no field of the group keeps its node: label it");
                 break;
 
             case TokenRefIR { Token.IsHidden: true } tokenRef:
-                found.Add($"Rule '{rule}' names the hidden token '{tokenRef.Token.Name}', which the parser never sees");
+                found.Add($"Rule '{rule}' names the hidden token '{tokenRef.Token.DisplayName}', which the parser never sees");
                 break;
 
             case TokenRefIR or StringLiteralIR or RuleRefIR or PredicateIR:
