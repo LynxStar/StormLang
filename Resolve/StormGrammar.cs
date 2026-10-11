@@ -174,7 +174,9 @@ public sealed class StormGrammar
         var rewritten = new Dictionary<StormDeclaration, StormDeclaration>(DeclarationIdentity.Instance);
         foreach(var (declaration, scope, filePath) in naming.Owners.Where(owner => owner.Declaration is not StormModeDecl))
         {
-            var rewriter = new DeclarationRewriter(scope, naming.ScopeOf, naming.Names, ReferenceEquals(scope, naming.Root) ? null : unresolved);
+            var rewriter = ReferenceEquals(scope, naming.Root)
+                ? new DeclarationRewriter(scope, naming.ScopeOf, naming.Names, null)
+                : new DeclarationRewriter(naming.ScopeOf(filePath), naming.ScopeOf, naming.Names, unresolved);
             rewritten[declaration] = rewriter.Rewrite(declaration, naming.Names[declaration], filePath);
         }
 

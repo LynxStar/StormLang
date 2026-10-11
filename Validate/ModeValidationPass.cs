@@ -1,3 +1,4 @@
+using System;
 using System.Collections.Generic;
 using System.Linq;
 using Storm.SourceGenerator.Diagnostics;
@@ -77,7 +78,7 @@ public static class ModeValidationPass
     {
         foreach(var modeDecl in modeDecls)
         {
-            if(modeDecl.Name == "default")
+            if(modeDecl.Name == "default" || modeDecl.Name.EndsWith(".default", StringComparison.Ordinal))
             {
                 diagnostics.Add(new StormDiagnostic(
                     StormDiagnosticIds.STORM_RESERVED_MODE_NAME,

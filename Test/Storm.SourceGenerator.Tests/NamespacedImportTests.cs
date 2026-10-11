@@ -142,6 +142,57 @@ public sealed class NamespacedImportTests
             lowering.Grammar.Tokens.Select(token => token.Name + " " + token.DisplayName));
     }
 
+    [Theory]
+    [InlineData(true, false)]
+    [InlineData(false, false)]
+    [InlineData(true, true)]
+    [InlineData(false, true)]
+    public void AFileTwoNamespacesShareMeansWhatItMeansItself_WhicheverReachesItFirst(bool sharerFirst, bool importsWhatItNames)
+    {
+        StormImport[] imports = sharerFirst ? [Import("m.storm", "M"), Import("l.storm", "L")] : [Import("l.storm", "L"), Import("m.storm", "M")];
+        var grammar = Build(
+            Root(imports, Rule("Start", Seq(Qualified("M", "Use"), Qualified("L", "Bar")))),
+            Lib("m.storm", [Import("l.storm"), Import("x.storm")], Rule("Use", Ref("Bar"))),
+            Lib("l.storm", importsWhatItNames ? [Import("x.storm")] : [], new StormRuleDecl("Bar", Ref("X"), 0, 5, 1)),
+            Lib("x.storm", [], Token("X", "x")));
+
+        Assert.Equal(
+            importsWhatItNames ? [] : [("Undefined reference 'X' in declaration '" + (sharerFirst ? "M" : "L") + ".Bar'", "root/l.storm")],
+            grammar.Diagnostics.Select(diagnostic => (diagnostic.Message, diagnostic.FilePath)));
+    }
+
+    [Fact]
+    public void AnImportedModeNamedDefaultIsStillTheReservedName()
+    {
+        var grammar = Build(
+            Root([Import("lib.storm", "L")], Rule("Start", Qualified("L", "OPEN"))),
+            Lib("lib.storm", [],
+                new StormTokenDecl("OPEN", new StormStringLiteralExpr("{"), 0, 1, 1),
+                new StormModeDecl("default", [new StormTokenDecl("CLOSE", new StormStringLiteralExpr("}"), 0, 3, 5, new StormPopAction())], 0, 2, 1)));
+
+        Assert.Contains(
+            (StormDiagnosticIds.STORM_RESERVED_MODE_NAME, "'L.default' is a reserved mode name and cannot be used as a user-defined mode"),
+            ModeValidationPass.Run(grammar).Select(diagnostic => (diagnostic.Id, diagnostic.Message)));
+    }
+
+    [Theory]
+    [InlineData("a root alternative's node type", "L.Foo", "L_Foo2")]
+    [InlineData("a root rule named like a trait's interface", "L.Marked", "L_Marked2")]
+    public void AQualifiedNameIsNumberedPastTheTypesARootNameGenerates(string collision, string qualified, string identifier)
+    {
+        var grammar = collision == "a root alternative's node type"
+            ? Build(
+                Root([Import("lib.storm", "L")], Token("A", "a"), Token("B", "b"),
+                    Rule("Foo", new StormAlternationExpr([new StormNamedAlternative(Ref("A"), "L_"), new StormNamedAlternative(Ref("B"), "Other")]))),
+                Lib("lib.storm", [], Token("C", "c"), Rule("Foo", Ref("C"))))
+            : Build(
+                Root([Import("lib.storm", "L")], Token("A", "a"), Rule("IL_Marked", Ref("A"))),
+                Lib("lib.storm", [], Token("C", "c"), new StormTraitDecl("Marked", [new StormTraitField("mark", "C", StormFieldCardinality.One)], [], 0, 1, 1)));
+
+        Assert.True(grammar.Succeeded, string.Join("\n", grammar.Diagnostics.Select(d => d.Message)));
+        Assert.Equal(identifier, EmittedNames.Of(grammar)[qualified]);
+    }
+
     private static IReadOnlyList<string> Printed(StormGrammar grammar)
     {
         Assert.True(grammar.Succeeded, string.Join("\n", grammar.Diagnostics.Select(d => d.Message)));
