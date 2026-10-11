@@ -1,3 +1,4 @@
+using Storm.SourceGenerator.Frontend;
 using Storm.SourceGenerator.IR;
 using Storm.SourceGenerator.Resolve;
 
@@ -21,6 +22,17 @@ public class GrammarIRLoweringTests
 
             return null;
         };
+    }
+
+    private static StormGrammar Declared(params StormDeclaration[] declarations)
+    {
+        var file = new StormFile(new StormGrammarDecl("Test", 0, 1, 1), [], declarations);
+        return StormGrammar.Build(new ImportResolutionResult(
+            "root/main.storm",
+            new Dictionary<string, StormFile> { ["root/main.storm"] = file },
+            [new KeyValuePair<string, StormFile>("root/main.storm", file)],
+            [],
+            true));
     }
 
     private static GrammarIRLowering.LoweringResult LowerGrammar(Dictionary<string, string> files, string rootPath)
@@ -60,6 +72,39 @@ public class GrammarIRLoweringTests
         _ = Assert.IsType<CharClassIR>(inlineFrag.Body);
         var charClass = (CharClassIR)inlineFrag.Body;
         Assert.Equal("[0-9]", charClass.Text);
+    }
+
+    [Fact]
+    [Trait("Tier", "1")]
+    public void ATokenNamingAnotherTokenInlinesThatTokensPattern()
+    {
+        var result = GrammarIRLowering.Lower(Declared(
+            new StormTokenDecl("DIGIT", new StormCharClassExpr("[0-9]"), 0, 1, 1),
+            new StormTokenDecl("NUM", new StormOneOrMoreExpr(new StormReferenceExpr("DIGIT")), 0, 2, 1)));
+
+        Assert.True(result.Succeeded, string.Join("\n", result.Diagnostics.Select(d => d.Message)));
+        var inlined = Assert.IsType<InlineFragmentIR>(Assert.IsType<OneOrMoreIR>(result.Grammar!.Tokens.Single(t => t.Name == "NUM").Expression).Inner);
+        Assert.Equal(("DIGIT", "[0-9]"), (inlined.FragmentName, Assert.IsType<CharClassIR>(inlined.Body).Text));
+    }
+
+    [Theory]
+    [Trait("Tier", "1")]
+    [InlineData("a cycle", "Circular pattern reference detected: 'A'")]
+    [InlineData("another mode", "Token pattern 'INNER' cannot be inlined into a token of mode 'default'")]
+    public void ATokenPatternThatCannotBeInlinedIsRefused_NotMatchedAsItsName(string shape, string message)
+    {
+        var grammar = shape == "a cycle"
+            ? Declared(
+                new StormTokenDecl("A", new StormSequenceExpr([new StormReferenceExpr("B"), new StormStringLiteralExpr("x")]), 0, 1, 1),
+                new StormTokenDecl("B", new StormReferenceExpr("A"), 0, 2, 1))
+            : Declared(
+                new StormModeDecl("Inner", [new StormTokenDecl("INNER", new StormCharClassExpr("[a]"), 0, 2, 5)], 0, 1, 1),
+                new StormTokenDecl("OUTER", new StormReferenceExpr("INNER"), 0, 4, 1));
+
+        var result = GrammarIRLowering.Lower(grammar);
+
+        Assert.False(result.Succeeded);
+        Assert.Contains(message, result.Diagnostics.Select(d => d.Message));
     }
 
     [Fact]

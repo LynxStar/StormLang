@@ -12,8 +12,8 @@ namespace Storm.SourceGenerator.IR;
 /// Lowers a validated <see cref="StormGrammar"/> (effective grammar) into a
 /// <see cref="GrammarIR"/>. The lowering performs:
 /// <list type="bullet">
-///   <item>Fragment inlining — replaces fragment references in token expressions
-///         with the fragment's body expression.</item>
+///   <item>Pattern inlining — replaces fragment and token references in token
+///         expressions with the named declaration's body expression.</item>
 ///   <item>Synthetic token creation — materializes anonymous string literals
 ///         appearing in rule expressions as synthetic <see cref="TokenIR"/> entries.</item>
 ///   <item>Declaration-order index assignment for tokens.</item>
@@ -71,15 +71,16 @@ public static class GrammarIRLowering
         }
 
         // ---------------------------------------------------------------
-        // 1. Collect fragments for inlining (mode-scoped)
+        // 1. Collect fragments and tokens, whose patterns a token
+        //    expression inlines where it names them (mode-scoped)
         // ---------------------------------------------------------------
-        var fragmentsByName = new Dictionary<(string Mode, string Name), StormDeclaration>();
+        var patternsByName = new Dictionary<(string Mode, string Name), StormDeclaration>();
         foreach(var decl in grammar.Declarations)
         {
-            if(decl is StormFragmentDecl)
+            if(decl is StormFragmentDecl or StormTokenDecl or StormHiddenTokenDecl)
             {
                 var mode = declNameToMode.TryGetValue(decl.Name, out var m) ? m : "default";
-                fragmentsByName[(mode, decl.Name)] = decl;
+                patternsByName[(mode, decl.Name)] = decl;
             }
         }
 
@@ -97,7 +98,7 @@ public static class GrammarIRLowering
                 var isHidden = decl is StormHiddenTokenDecl;
                 var mode = declNameToMode.TryGetValue(decl.Name, out var m) ? m : "default";
                 var modeAction = ConvertModeAction(decl, identifiers);
-                var inlinedExpr = InlineFragments(decl.Body, fragmentsByName, mode, new HashSet<string>(StringComparer.Ordinal), diagnostics);
+                var inlinedExpr = InlinePatterns(decl.Body, patternsByName, mode, new HashSet<string>(StringComparer.Ordinal), diagnostics);
                 var tokenIR = new TokenIR(EmittedNames.Of(identifiers, decl.Name), inlinedExpr, isHidden, tokenIndex, mode: EmittedNames.Of(identifiers, mode), modeAction: modeAction, displayName: decl.Name);
                 tokenIRs.Add(tokenIR);
                 tokensByName[decl.Name] = tokenIR;
@@ -195,13 +196,13 @@ public static class GrammarIRLowering
     // ---------------------------------------------------------------
 
     /// <summary>
-    /// Recursively inlines fragment references in a token expression.
-    /// Fragments are resolved first within the current mode, then falling
+    /// Recursively inlines fragment and token references in a token expression.
+    /// They are resolved first within the current mode, then falling
     /// back to the default mode.
     /// </summary>
-    private static ExpressionIR InlineFragments(
+    private static ExpressionIR InlinePatterns(
         StormExpression expr,
-        Dictionary<(string Mode, string Name), StormDeclaration> fragmentsByName,
+        Dictionary<(string Mode, string Name), StormDeclaration> patternsByName,
         string currentMode,
         HashSet<string> inliningStack,
         List<StormDiagnostic> diagnostics)
@@ -209,53 +210,51 @@ public static class GrammarIRLowering
         switch(expr)
         {
             case StormReferenceExpr refExpr:
-                if(TryResolveFragment(fragmentsByName, currentMode, refExpr.Name, out var fragment))
+                if(TryResolvePattern(patternsByName, currentMode, refExpr.Name, out var pattern))
                 {
                     if(!inliningStack.Add(refExpr.Name))
                     {
                         diagnostics.Add(new StormDiagnostic(
                             StormDiagnosticIds.STORM_UNSUPPORTED_CONSTRUCT,
                             StormDiagnosticSeverity.Error,
-                            $"Circular fragment reference detected: '{refExpr.Name}'",
+                            $"Circular pattern reference detected: '{refExpr.Name}'",
                             null, 0, 0));
                         return new StringLiteralIR(""); // placeholder
                     }
 
-                    var inlined = InlineFragments(fragment.Body, fragmentsByName, currentMode, inliningStack, diagnostics);
+                    var inlined = InlinePatterns(pattern.Body, patternsByName, currentMode, inliningStack, diagnostics);
                     _ = inliningStack.Remove(refExpr.Name);
                     return new InlineFragmentIR(refExpr.Name, inlined);
                 }
-                // Not a fragment — leave as-is for now; this is a token-to-token reference
-                // which will be resolved later. For token expressions, non-fragment references
-                // are references to other tokens.
-                return new StringLiteralIR(refExpr.Name); // placeholder — shouldn't happen in valid grammars
+
+                return Uninlinable(refExpr.Name, currentMode, diagnostics);
 
             case StormQualifiedReferenceExpr qualRef:
                 var qualName = qualRef.Qualifier + "." + qualRef.Name;
-                if(TryResolveFragment(fragmentsByName, currentMode, qualName, out var qualFragment))
+                if(TryResolvePattern(patternsByName, currentMode, qualName, out var qualPattern))
                 {
                     if(!inliningStack.Add(qualName))
                     {
                         diagnostics.Add(new StormDiagnostic(
                             StormDiagnosticIds.STORM_UNSUPPORTED_CONSTRUCT,
                             StormDiagnosticSeverity.Error,
-                            $"Circular fragment reference detected: '{qualName}'",
+                            $"Circular pattern reference detected: '{qualName}'",
                             null, 0, 0));
                         return new StringLiteralIR("");
                     }
 
-                    var inlined = InlineFragments(qualFragment.Body, fragmentsByName, currentMode, inliningStack, diagnostics);
+                    var inlined = InlinePatterns(qualPattern.Body, patternsByName, currentMode, inliningStack, diagnostics);
                     _ = inliningStack.Remove(qualName);
                     return new InlineFragmentIR(qualName, inlined);
                 }
 
-                return new StringLiteralIR(qualName); // placeholder
+                return Uninlinable(qualName, currentMode, diagnostics);
 
             case StormSequenceExpr seqExpr:
                 var seqElements = new List<ExpressionIR>();
                 foreach(var element in seqExpr.Elements)
                 {
-                    seqElements.Add(InlineFragments(element, fragmentsByName, currentMode, inliningStack, diagnostics));
+                    seqElements.Add(InlinePatterns(element, patternsByName, currentMode, inliningStack, diagnostics));
                 }
 
                 return new SequenceIR(seqElements);
@@ -264,22 +263,22 @@ public static class GrammarIRLowering
                 var altElements = new List<ExpressionIR>();
                 foreach(var alt in altExpr.Alternatives)
                 {
-                    altElements.Add(InlineFragments(alt, fragmentsByName, currentMode, inliningStack, diagnostics));
+                    altElements.Add(InlinePatterns(alt, patternsByName, currentMode, inliningStack, diagnostics));
                 }
 
                 return new AlternationIR(altElements);
 
             case StormOptionalExpr optExpr:
-                return new OptionalIR(InlineFragments(optExpr.Inner, fragmentsByName, currentMode, inliningStack, diagnostics));
+                return new OptionalIR(InlinePatterns(optExpr.Inner, patternsByName, currentMode, inliningStack, diagnostics));
 
             case StormZeroOrMoreExpr zomExpr:
-                return new ZeroOrMoreIR(InlineFragments(zomExpr.Inner, fragmentsByName, currentMode, inliningStack, diagnostics));
+                return new ZeroOrMoreIR(InlinePatterns(zomExpr.Inner, patternsByName, currentMode, inliningStack, diagnostics));
 
             case StormOneOrMoreExpr oomExpr:
-                return new OneOrMoreIR(InlineFragments(oomExpr.Inner, fragmentsByName, currentMode, inliningStack, diagnostics));
+                return new OneOrMoreIR(InlinePatterns(oomExpr.Inner, patternsByName, currentMode, inliningStack, diagnostics));
 
             case StormGroupExpr groupExpr:
-                return InlineFragments(groupExpr.Inner, fragmentsByName, currentMode, inliningStack, diagnostics);
+                return InlinePatterns(groupExpr.Inner, patternsByName, currentMode, inliningStack, diagnostics);
 
             case StormStringLiteralExpr strExpr:
                 return new StringLiteralIR(strExpr.Value);
@@ -292,11 +291,11 @@ public static class GrammarIRLowering
 
             case StormLabeledExpr labeledExpr:
                 // Labels don't appear in token expressions normally, but handle gracefully
-                return InlineFragments(labeledExpr.Element, fragmentsByName, currentMode, inliningStack, diagnostics);
+                return InlinePatterns(labeledExpr.Element, patternsByName, currentMode, inliningStack, diagnostics);
 
             case StormNamedAlternative namedAlt:
                 // Named alternatives don't appear in token expressions, but handle gracefully
-                return InlineFragments(namedAlt.Expression, fragmentsByName, currentMode, inliningStack, diagnostics);
+                return InlinePatterns(namedAlt.Expression, patternsByName, currentMode, inliningStack, diagnostics);
 
             default:
                 diagnostics.Add(new StormDiagnostic(
@@ -308,29 +307,39 @@ public static class GrammarIRLowering
         }
     }
 
+    private static ExpressionIR Uninlinable(string name, string mode, List<StormDiagnostic> diagnostics)
+    {
+        diagnostics.Add(new StormDiagnostic(
+            StormDiagnosticIds.STORM_UNSUPPORTED_CONSTRUCT,
+            StormDiagnosticSeverity.Error,
+            $"Token pattern '{name}' cannot be inlined into a token of mode '{mode}'",
+            null, 0, 0));
+        return new StringLiteralIR(name);
+    }
+
     /// <summary>
-    /// Resolves a fragment by name, first looking in the current mode,
+    /// Resolves a fragment or token by name, first looking in the current mode,
     /// then falling back to the default mode.
     /// </summary>
-    private static bool TryResolveFragment(
-        Dictionary<(string Mode, string Name), StormDeclaration> fragmentsByName,
+    private static bool TryResolvePattern(
+        Dictionary<(string Mode, string Name), StormDeclaration> patternsByName,
         string currentMode,
-        string fragmentName,
-        out StormDeclaration fragment)
+        string name,
+        out StormDeclaration pattern)
     {
         // Try current mode first
-        if(fragmentsByName.TryGetValue((currentMode, fragmentName), out fragment!))
+        if(patternsByName.TryGetValue((currentMode, name), out pattern!))
         {
             return true;
         }
 
         // Fall back to default mode if not already in default
-        if(currentMode != "default" && fragmentsByName.TryGetValue(("default", fragmentName), out fragment!))
+        if(currentMode != "default" && patternsByName.TryGetValue(("default", name), out pattern!))
         {
             return true;
         }
 
-        fragment = null!;
+        pattern = null!;
         return false;
     }
 
