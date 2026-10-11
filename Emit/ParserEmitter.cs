@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.Linq;
+using Microsoft.CodeAnalysis.CSharp;
 using Storm.SourceGenerator.IR;
 
 namespace Storm.SourceGenerator.Emit;
@@ -654,7 +655,7 @@ public static partial class ParserEmitter
         switch(alternative)
         {
             case TokenRefIR tokenRef:
-                return $"Match((int){TokenKindRef(tokenRef.Token.Name)})";
+                return MatchToken(tokenRef);
             case StringLiteralIR lit:
                 {
                     var token = FindTokenForLiteral(context, lit.Value);
@@ -710,7 +711,7 @@ public static partial class ParserEmitter
         switch(expr)
         {
             case TokenRefIR tokenRef:
-                return $"Peek({offset++}) == (int){TokenKindRef(tokenRef.Token.Name)}";
+                return TokenTest(tokenRef, offset++);
 
             case StringLiteralIR lit:
                 var token = FindTokenForLiteral(context, lit.Value);
@@ -771,6 +772,23 @@ public static partial class ParserEmitter
         }
 
         return null;
+    }
+
+    private static string MatchToken(TokenRefIR tokenRef)
+    {
+        var kind = TokenKindRef(tokenRef.Token.Name);
+        var match = $"Match((int){kind})";
+        return tokenRef.Text == null
+            ? match
+            : $"(Peek() == (int){kind} && Cur().Lexeme == {SymbolDisplay.FormatLiteral(tokenRef.Text, quote: true)} ? {match} : (Token?)null)";
+    }
+
+    private static string TokenTest(TokenRefIR tokenRef, int offset)
+    {
+        var test = $"Peek({offset}) == (int){TokenKindRef(tokenRef.Token.Name)}";
+        return tokenRef.Text == null
+            ? test
+            : $"({test} && _tokens[_pos + {offset}].Lexeme == {SymbolDisplay.FormatLiteral(tokenRef.Text, quote: true)})";
     }
 
     private static string TokenKindRef(string tokenName)

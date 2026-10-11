@@ -187,7 +187,7 @@ public static partial class ParserEmitter
                     break;
 
                 case TokenRefIR tokenRef:
-                    Leaf(expr, $"Match((int){TokenKindRef(tokenRef.Token.Name)})", tokenValued: true, ok, frame);
+                    Leaf(expr, MatchToken(tokenRef), tokenValued: true, ok, frame);
                     break;
 
                 case StringLiteralIR literal:

@@ -165,15 +165,15 @@ public static class GrammarIRLowering
         // 4. First pass over rule expressions: collect anonymous string
         //    literals and create synthetic tokens for them
         // ---------------------------------------------------------------
-        var syntheticTokens = new Dictionary<string, TokenIR>(StringComparer.Ordinal);
+        var literals = new LiteralTokens(tokenIRs);
 
         foreach(var (name, decl) in ruleOrder)
         {
-            CollectAnonymousStringLiterals(decl.Body, syntheticTokens, tokensByName, ref tokenIndex);
+            CollectAnonymousStringLiterals(decl.Body, literals, tokensByName, ref tokenIndex);
         }
 
         // Append synthetic tokens to the token list
-        foreach(var synth in syntheticTokens.Values)
+        foreach(var synth in literals.Synthetic.Values)
         {
             tokenIRs.Add(synth);
             tokensByName[synth.Name] = synth;
@@ -199,7 +199,7 @@ public static class GrammarIRLowering
 
         foreach(var (name, decl) in ruleOrder)
         {
-            var alternatives = LowerRuleAlternatives(decl.Body, tokensByName, ruleShells, syntheticTokens, ruleDeclarations, diagnostics);
+            var alternatives = LowerRuleAlternatives(decl.Body, tokensByName, ruleShells, literals, ruleDeclarations, diagnostics);
             foreach(var shape in alternatives.SelectMany(alternative => UnemittableShapes.Find(name, alternative)))
             {
                 diagnostics.Add(new StormDiagnostic(
@@ -398,11 +398,11 @@ public static class GrammarIRLowering
     /// <summary>
     /// Walks a rule expression and collects all anonymous string literals,
     /// creating synthetic <see cref="TokenIR"/> entries for each unique literal
-    /// that no declared token spells.
+    /// that no declared token accepts.
     /// </summary>
     private static void CollectAnonymousStringLiterals(
         StormExpression expr,
-        Dictionary<string, TokenIR> syntheticTokens,
+        LiteralTokens literals,
         Dictionary<string, TokenIR> existingTokens,
         ref int tokenIndex)
     {
@@ -410,7 +410,7 @@ public static class GrammarIRLowering
         {
             case StormStringLiteralExpr strExpr:
                 var synthName = SyntheticTokenName(strExpr.Value);
-                if(DeclaredTokenSpelling(strExpr.Value, existingTokens.Values) == null && !syntheticTokens.ContainsKey(synthName) && !existingTokens.ContainsKey(synthName))
+                if(literals.Lexed(strExpr.Value) == null && !literals.Synthetic.ContainsKey(synthName) && !existingTokens.ContainsKey(synthName))
                 {
                     var synthToken = new TokenIR(
                         synthName,
@@ -418,7 +418,7 @@ public static class GrammarIRLowering
                         isHidden: false,
                         declarationIndex: tokenIndex,
                         isSynthetic: true);
-                    syntheticTokens[synthName] = synthToken;
+                    literals.Synthetic[synthName] = synthToken;
                     tokenIndex++;
                 }
 
@@ -427,7 +427,7 @@ public static class GrammarIRLowering
             case StormSequenceExpr seqExpr:
                 foreach(var element in seqExpr.Elements)
                 {
-                    CollectAnonymousStringLiterals(element, syntheticTokens, existingTokens, ref tokenIndex);
+                    CollectAnonymousStringLiterals(element, literals, existingTokens, ref tokenIndex);
                 }
 
                 break;
@@ -435,37 +435,37 @@ public static class GrammarIRLowering
             case StormAlternationExpr altExpr:
                 foreach(var alt in altExpr.Alternatives)
                 {
-                    CollectAnonymousStringLiterals(alt, syntheticTokens, existingTokens, ref tokenIndex);
+                    CollectAnonymousStringLiterals(alt, literals, existingTokens, ref tokenIndex);
                 }
 
                 break;
 
             case StormOptionalExpr optExpr:
-                CollectAnonymousStringLiterals(optExpr.Inner, syntheticTokens, existingTokens, ref tokenIndex);
+                CollectAnonymousStringLiterals(optExpr.Inner, literals, existingTokens, ref tokenIndex);
                 break;
 
             case StormZeroOrMoreExpr zomExpr:
-                CollectAnonymousStringLiterals(zomExpr.Inner, syntheticTokens, existingTokens, ref tokenIndex);
+                CollectAnonymousStringLiterals(zomExpr.Inner, literals, existingTokens, ref tokenIndex);
                 break;
 
             case StormOneOrMoreExpr oomExpr:
-                CollectAnonymousStringLiterals(oomExpr.Inner, syntheticTokens, existingTokens, ref tokenIndex);
+                CollectAnonymousStringLiterals(oomExpr.Inner, literals, existingTokens, ref tokenIndex);
                 break;
 
             case StormGroupExpr groupExpr:
-                CollectAnonymousStringLiterals(groupExpr.Inner, syntheticTokens, existingTokens, ref tokenIndex);
+                CollectAnonymousStringLiterals(groupExpr.Inner, literals, existingTokens, ref tokenIndex);
                 break;
 
             case StormPredicateExpr predicateExpr:
-                CollectAnonymousStringLiterals(predicateExpr.Inner, syntheticTokens, existingTokens, ref tokenIndex);
+                CollectAnonymousStringLiterals(predicateExpr.Inner, literals, existingTokens, ref tokenIndex);
                 break;
 
             case StormLabeledExpr labeledExpr:
-                CollectAnonymousStringLiterals(labeledExpr.Element, syntheticTokens, existingTokens, ref tokenIndex);
+                CollectAnonymousStringLiterals(labeledExpr.Element, literals, existingTokens, ref tokenIndex);
                 break;
 
             case StormNamedAlternative namedAlt:
-                CollectAnonymousStringLiterals(namedAlt.Expression, syntheticTokens, existingTokens, ref tokenIndex);
+                CollectAnonymousStringLiterals(namedAlt.Expression, literals, existingTokens, ref tokenIndex);
                 break;
 
             case StormInlineBlockExpr inlineBlock:
@@ -479,7 +479,7 @@ public static class GrammarIRLowering
                     {
                         if(arm.Expression is StormInlineBlockExpr nestedBlock)
                         {
-                            CollectAnonymousStringLiterals(nestedBlock, syntheticTokens, existingTokens, ref tokenIndex);
+                            CollectAnonymousStringLiterals(nestedBlock, literals, existingTokens, ref tokenIndex);
                         }
                     }
                 }
@@ -490,30 +490,6 @@ public static class GrammarIRLowering
             default:
                 break;
         }
-    }
-
-    /// <summary>
-    /// A synthetic token is lexed in the default mode after every declared token, so a declared default-mode token
-    /// spelled exactly like the literal always wins the tie and the synthetic one never appears. The literal names that
-    /// token instead, a hidden one included, just as writing its name would. A token of another mode never competes,
-    /// and a pattern that merely admits the text is not recognised here.
-    /// </summary>
-    internal static TokenIR? DeclaredTokenSpelling(string literal, IEnumerable<TokenIR> tokens)
-    {
-        return tokens
-            .Where(token => !token.IsSynthetic && token.Mode == "default" && Spells(token.Expression, literal))
-            .OrderBy(token => token.DeclarationIndex)
-            .FirstOrDefault();
-    }
-
-    private static bool Spells(ExpressionIR pattern, string literal)
-    {
-        return pattern switch
-        {
-            StringLiteralIR text => text.Value == literal,
-            InlineFragmentIR fragment => Spells(fragment.Body, literal),
-            _ => false,
-        };
     }
 
     /// <summary>
@@ -580,7 +556,7 @@ public static class GrammarIRLowering
         StormExpression body,
         Dictionary<string, TokenIR> tokensByName,
         Dictionary<string, RuleIR> rulesByName,
-        Dictionary<string, TokenIR> syntheticTokens,
+        LiteralTokens literals,
         Dictionary<string, StormDeclaration> ruleDeclarations,
         List<StormDiagnostic> diagnostics)
     {
@@ -592,12 +568,12 @@ public static class GrammarIRLowering
         {
             foreach(var alt in altExpr.Alternatives)
             {
-                alternatives.Add(LowerSingleAlternative(alt, tokensByName, rulesByName, syntheticTokens, ruleDeclarations, diagnostics));
+                alternatives.Add(LowerSingleAlternative(alt, tokensByName, rulesByName, literals, ruleDeclarations, diagnostics));
             }
         }
         else
         {
-            alternatives.Add(LowerSingleAlternative(body, tokensByName, rulesByName, syntheticTokens, ruleDeclarations, diagnostics));
+            alternatives.Add(LowerSingleAlternative(body, tokensByName, rulesByName, literals, ruleDeclarations, diagnostics));
         }
 
         return alternatives;
@@ -611,7 +587,7 @@ public static class GrammarIRLowering
         StormExpression expr,
         Dictionary<string, TokenIR> tokensByName,
         Dictionary<string, RuleIR> rulesByName,
-        Dictionary<string, TokenIR> syntheticTokens,
+        LiteralTokens literals,
         Dictionary<string, StormDeclaration> ruleDeclarations,
         List<StormDiagnostic> diagnostics)
     {
@@ -628,13 +604,13 @@ public static class GrammarIRLowering
         // If the body is an inline block, produce an InlineBlockIR with null alt name
         if(bodyExpr is StormInlineBlockExpr inlineBlock)
         {
-            var inlineBlockIR = LowerInlineBlock(inlineBlock, tokensByName, rulesByName, syntheticTokens, ruleDeclarations, diagnostics);
+            var inlineBlockIR = LowerInlineBlock(inlineBlock, tokensByName, rulesByName, literals, ruleDeclarations, diagnostics);
             return new RuleAlternativeIR(null, new List<FieldLabelIR>(), inlineBlockIR);
         }
 
         // Collect field labels
         var fieldLabels = new List<FieldLabelIR>();
-        var loweredExpr = LowerRuleExpression(bodyExpr, tokensByName, rulesByName, syntheticTokens, ruleDeclarations, fieldLabels, diagnostics);
+        var loweredExpr = LowerRuleExpression(bodyExpr, tokensByName, rulesByName, literals, ruleDeclarations, fieldLabels, diagnostics);
 
         return new RuleAlternativeIR(altName, fieldLabels, loweredExpr);
     }
@@ -648,7 +624,7 @@ public static class GrammarIRLowering
         StormExpression expr,
         Dictionary<string, TokenIR> tokensByName,
         Dictionary<string, RuleIR> rulesByName,
-        Dictionary<string, TokenIR> syntheticTokens,
+        LiteralTokens literals,
         Dictionary<string, StormDeclaration> ruleDeclarations,
         List<FieldLabelIR> fieldLabels,
         List<StormDiagnostic> diagnostics)
@@ -694,15 +670,14 @@ public static class GrammarIRLowering
                 return new StringLiteralIR("");
 
             case StormStringLiteralExpr strExpr:
-                var declaredToken = DeclaredTokenSpelling(strExpr.Value, tokensByName.Values);
-                if(declaredToken != null)
+                if(literals.Lexed(strExpr.Value) is { } lexed)
                 {
-                    return new TokenRefIR(declaredToken);
+                    return lexed;
                 }
 
                 // Replace with a reference to the synthetic token
                 var synthName = SyntheticTokenName(strExpr.Value);
-                if(syntheticTokens.TryGetValue(synthName, out var synthToken))
+                if(literals.Synthetic.TryGetValue(synthName, out var synthToken))
                 {
                     return new TokenRefIR(synthToken);
                 }
@@ -723,7 +698,7 @@ public static class GrammarIRLowering
                 var seqElements = new List<ExpressionIR>();
                 foreach(var element in seqExpr.Elements)
                 {
-                    var loweredElement = LowerRuleExpression(element, tokensByName, rulesByName, syntheticTokens, ruleDeclarations, fieldLabels, diagnostics);
+                    var loweredElement = LowerRuleExpression(element, tokensByName, rulesByName, literals, ruleDeclarations, fieldLabels, diagnostics);
 
                     // The AST reads a group's values off its direct elements only.
                     if(loweredElement is SequenceIR inner && !fieldLabels.Any(label => ReferenceEquals(label.Expression, inner)))
@@ -742,26 +717,26 @@ public static class GrammarIRLowering
                 var altElements = new List<ExpressionIR>();
                 foreach(var alt in altExpr.Alternatives)
                 {
-                    altElements.Add(LowerRuleExpression(alt, tokensByName, rulesByName, syntheticTokens, ruleDeclarations, fieldLabels, diagnostics));
+                    altElements.Add(LowerRuleExpression(alt, tokensByName, rulesByName, literals, ruleDeclarations, fieldLabels, diagnostics));
                 }
 
                 return new AlternationIR(altElements);
 
             case StormOptionalExpr optExpr:
-                return new OptionalIR(LowerRuleExpression(optExpr.Inner, tokensByName, rulesByName, syntheticTokens, ruleDeclarations, fieldLabels, diagnostics));
+                return new OptionalIR(LowerRuleExpression(optExpr.Inner, tokensByName, rulesByName, literals, ruleDeclarations, fieldLabels, diagnostics));
 
             case StormZeroOrMoreExpr zomExpr:
-                return new ZeroOrMoreIR(LowerRuleExpression(zomExpr.Inner, tokensByName, rulesByName, syntheticTokens, ruleDeclarations, fieldLabels, diagnostics));
+                return new ZeroOrMoreIR(LowerRuleExpression(zomExpr.Inner, tokensByName, rulesByName, literals, ruleDeclarations, fieldLabels, diagnostics));
 
             case StormOneOrMoreExpr oomExpr:
-                return new OneOrMoreIR(LowerRuleExpression(oomExpr.Inner, tokensByName, rulesByName, syntheticTokens, ruleDeclarations, fieldLabels, diagnostics));
+                return new OneOrMoreIR(LowerRuleExpression(oomExpr.Inner, tokensByName, rulesByName, literals, ruleDeclarations, fieldLabels, diagnostics));
 
             case StormGroupExpr groupExpr:
-                return LowerRuleExpression(groupExpr.Inner, tokensByName, rulesByName, syntheticTokens, ruleDeclarations, fieldLabels, diagnostics);
+                return LowerRuleExpression(groupExpr.Inner, tokensByName, rulesByName, literals, ruleDeclarations, fieldLabels, diagnostics);
 
             case StormPredicateExpr predicateExpr:
                 var predicateLabels = new List<FieldLabelIR>();
-                var predicateInner = LowerRuleExpression(predicateExpr.Inner, tokensByName, rulesByName, syntheticTokens, ruleDeclarations, predicateLabels, diagnostics);
+                var predicateInner = LowerRuleExpression(predicateExpr.Inner, tokensByName, rulesByName, literals, ruleDeclarations, predicateLabels, diagnostics);
                 if(predicateLabels.Count > 0)
                 {
                     diagnostics.Add(new StormDiagnostic(
@@ -783,17 +758,17 @@ public static class GrammarIRLowering
                 return new PredicateIR(predicateInner, predicateExpr.IsNegated);
 
             case StormLabeledExpr labeledExpr:
-                var labeledInner = LowerRuleExpression(labeledExpr.Element, tokensByName, rulesByName, syntheticTokens, ruleDeclarations, fieldLabels, diagnostics);
+                var labeledInner = LowerRuleExpression(labeledExpr.Element, tokensByName, rulesByName, literals, ruleDeclarations, fieldLabels, diagnostics);
                 fieldLabels.Add(new FieldLabelIR(labeledExpr.Label, labeledInner));
                 return labeledInner;
 
             case StormNamedAlternative namedAlt:
                 // Nested named alternatives shouldn't normally occur at this level,
                 // but handle gracefully
-                return LowerRuleExpression(namedAlt.Expression, tokensByName, rulesByName, syntheticTokens, ruleDeclarations, fieldLabels, diagnostics);
+                return LowerRuleExpression(namedAlt.Expression, tokensByName, rulesByName, literals, ruleDeclarations, fieldLabels, diagnostics);
 
             case StormInlineBlockExpr inlineBlock:
-                return LowerInlineBlock(inlineBlock, tokensByName, rulesByName, syntheticTokens, ruleDeclarations, diagnostics);
+                return LowerInlineBlock(inlineBlock, tokensByName, rulesByName, literals, ruleDeclarations, diagnostics);
 
             case StormCharClassExpr ccExpr:
                 // Char classes shouldn't appear in rule expressions, but handle gracefully
@@ -873,7 +848,7 @@ public static class GrammarIRLowering
         StormInlineBlockExpr inlineBlock,
         Dictionary<string, TokenIR> tokensByName,
         Dictionary<string, RuleIR> rulesByName,
-        Dictionary<string, TokenIR> syntheticTokens,
+        LiteralTokens literals,
         Dictionary<string, StormDeclaration> ruleDeclarations,
         List<StormDiagnostic> diagnostics)
     {
@@ -881,7 +856,7 @@ public static class GrammarIRLowering
         var prefixRuleName = ((StormReferenceExpr)inlineBlock.Prefix).Name;
         var prefixDecl = ruleDeclarations[prefixRuleName];
         var prefixLabels = new List<FieldLabelIR>();
-        var prefixElements = LowerPrefixBody(prefixDecl.Body, tokensByName, rulesByName, syntheticTokens, ruleDeclarations, prefixLabels, diagnostics);
+        var prefixElements = LowerPrefixBody(prefixDecl.Body, tokensByName, rulesByName, literals, ruleDeclarations, prefixLabels, diagnostics);
 
         // 2. Lower each arm
         var arms = new List<InlineArmIR>();
@@ -890,7 +865,7 @@ public static class GrammarIRLowering
             // Handle nested inline blocks recursively
             if(arm.Expression is StormInlineBlockExpr nestedBlock)
             {
-                var nestedIR = LowerInlineBlock(nestedBlock, tokensByName, rulesByName, syntheticTokens, ruleDeclarations, diagnostics);
+                var nestedIR = LowerInlineBlock(nestedBlock, tokensByName, rulesByName, literals, ruleDeclarations, diagnostics);
                 // For nested inline blocks, we wrap the nested InlineBlockIR as a
                 // synthetic arm. The target rule doesn't exist in this case, so we
                 // create a placeholder. In practice, nested inline blocks are processed
@@ -912,7 +887,7 @@ public static class GrammarIRLowering
 
             // Get the arm rule's body sequence elements
             var tailLabels = new List<FieldLabelIR>();
-            var tailExpression = LowerArmTail(armDecl.Body, prefixRuleName, prefixElements.Count, tokensByName, rulesByName, syntheticTokens, ruleDeclarations, tailLabels, diagnostics);
+            var tailExpression = LowerArmTail(armDecl.Body, prefixRuleName, prefixElements.Count, tokensByName, rulesByName, literals, ruleDeclarations, tailLabels, diagnostics);
 
             var armIR = new InlineArmIR(
                 arm.AlternativeName,
@@ -934,7 +909,7 @@ public static class GrammarIRLowering
         StormExpression body,
         Dictionary<string, TokenIR> tokensByName,
         Dictionary<string, RuleIR> rulesByName,
-        Dictionary<string, TokenIR> syntheticTokens,
+        LiteralTokens literals,
         Dictionary<string, StormDeclaration> ruleDeclarations,
         List<FieldLabelIR> prefixLabels,
         List<StormDiagnostic> diagnostics)
@@ -945,13 +920,13 @@ public static class GrammarIRLowering
         {
             foreach(var element in seq.Elements)
             {
-                elements.Add(LowerRuleExpression(element, tokensByName, rulesByName, syntheticTokens, ruleDeclarations, prefixLabels, diagnostics));
+                elements.Add(LowerRuleExpression(element, tokensByName, rulesByName, literals, ruleDeclarations, prefixLabels, diagnostics));
             }
         }
         else
         {
             // Single-element body (not wrapped in a sequence)
-            elements.Add(LowerRuleExpression(body, tokensByName, rulesByName, syntheticTokens, ruleDeclarations, prefixLabels, diagnostics));
+            elements.Add(LowerRuleExpression(body, tokensByName, rulesByName, literals, ruleDeclarations, prefixLabels, diagnostics));
         }
 
         return elements;
@@ -969,7 +944,7 @@ public static class GrammarIRLowering
         int prefixElementCount,
         Dictionary<string, TokenIR> tokensByName,
         Dictionary<string, RuleIR> rulesByName,
-        Dictionary<string, TokenIR> syntheticTokens,
+        LiteralTokens literals,
         Dictionary<string, StormDeclaration> ruleDeclarations,
         List<FieldLabelIR> tailLabels,
         List<StormDiagnostic> diagnostics)
@@ -988,7 +963,7 @@ public static class GrammarIRLowering
             var tailElements = new List<ExpressionIR>();
             for(var i = stripCount; i < seq.Elements.Count; i++)
             {
-                tailElements.Add(LowerRuleExpression(seq.Elements[i], tokensByName, rulesByName, syntheticTokens, ruleDeclarations, tailLabels, diagnostics));
+                tailElements.Add(LowerRuleExpression(seq.Elements[i], tokensByName, rulesByName, literals, ruleDeclarations, tailLabels, diagnostics));
             }
 
             if(tailElements.Count == 1)
@@ -1006,7 +981,7 @@ public static class GrammarIRLowering
                 return new SequenceIR(new List<ExpressionIR>());
             }
 
-            return LowerRuleExpression(body, tokensByName, rulesByName, syntheticTokens, ruleDeclarations, tailLabels, diagnostics);
+            return LowerRuleExpression(body, tokensByName, rulesByName, literals, ruleDeclarations, tailLabels, diagnostics);
         }
     }
 

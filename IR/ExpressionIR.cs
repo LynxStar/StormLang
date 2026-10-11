@@ -122,9 +122,12 @@ public sealed class TokenRefIR : ExpressionIR
 {
     public TokenIR Token { get; }
 
-    public TokenRefIR(TokenIR token)
+    public string? Text { get; }
+
+    public TokenRefIR(TokenIR token, string? text = null)
     {
         Token = token;
+        Text = text;
     }
 }
 
