@@ -2,6 +2,7 @@ using System.Collections.Immutable;
 using Microsoft.CodeAnalysis;
 using Microsoft.CodeAnalysis.CSharp;
 using Microsoft.CodeAnalysis.Text;
+using Storm.SourceGenerator.Diagnostics;
 using Storm.SourceGenerator.Generator;
 
 namespace Storm.SourceGenerator.Tests;
@@ -129,6 +130,19 @@ public class GeneratorPipelineTests
         // Should have diagnostics
         Assert.True(result.Diagnostics.Length > 0 || result.GeneratedTrees.Length == 0,
             "Expected diagnostics or no generated output for invalid grammar");
+    }
+
+    [Theory]
+    [Trait("Tier", "4")]
+    [InlineData("rule Start = X | X;", DiagnosticSeverity.Error, false)]
+    [InlineData("rule Prefix = X;\nrule Arm = Prefix Y;\nrule Start = inline Prefix: { Arm as Armed } | X;", DiagnosticSeverity.Warning, true)]
+    public void AnUnreachableAlternativeWithholdsTheGeneratedSourcesOnlyAsAnError(string rules, DiagnosticSeverity severity, bool published)
+    {
+        var result = RunGenerator("grammar Test;\ntoken X = \"x\";\ntoken Y = \"y\";\n" + rules);
+
+        var unreachable = Assert.Single(result.Diagnostics, diagnostic => diagnostic.Id == StormDiagnosticIds.STORM_UNREACHABLE_ALTERNATIVE);
+        Assert.Equal(severity, unreachable.Severity);
+        Assert.Equal(published, result.GeneratedTrees.Length > 0);
     }
 
     // ---------------------------------------------------------------

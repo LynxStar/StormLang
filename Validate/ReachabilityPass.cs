@@ -6,7 +6,11 @@ using Storm.SourceGenerator.Resolve;
 
 namespace Storm.SourceGenerator.Validate;
 
-/// <summary>An inline block's arms are compared by FIRST-k, not <see cref="AlternativeShadowing"/>, as inline-rule-prefix requirement 5.3 prescribes.</summary>
+/// <summary>
+/// An inline block's arms are compared by FIRST-k, not <see cref="AlternativeShadowing"/>, and a finding an inline block
+/// takes part in stays a warning, as inline-rule-prefix requirement 5 prescribes; compiler-architecture requirement 7.2
+/// makes every other unreachable alternative an error.
+/// </summary>
 public static class ReachabilityPass
 {
     /// <summary>
@@ -45,11 +49,11 @@ public static class ReachabilityPass
         var shadowing = new AlternativeShadowing(grammar);
         for(var i = 0; i < alternatives.Count; i++)
         {
-            if(i > 0 && shadowing.IsShadowed(alternatives, i))
+            if(i > 0 && shadowing.IsShadowed(alternatives, i, out var throughInlineBlock))
             {
                 diagnostics.Add(new StormDiagnostic(
                     StormDiagnosticIds.STORM_UNREACHABLE_ALTERNATIVE,
-                    StormDiagnosticSeverity.Warning,
+                    throughInlineBlock ? StormDiagnosticSeverity.Warning : StormDiagnosticSeverity.Error,
                     $"Alternative {i + 1} in rule '{rule.Name}' is unreachable; an earlier alternative succeeds on every input it can match",
                     null,
                     rule.Line,

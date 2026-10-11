@@ -32,22 +32,26 @@ internal sealed class AlternativeShadowing
         Unknown,
     }
 
-    internal bool IsShadowed(IReadOnlyList<StormExpression> alternatives, int index)
+    internal bool IsShadowed(IReadOnlyList<StormExpression> alternatives, int index, out bool throughInlineBlock)
     {
+        throughInlineBlock = false;
         for(var depth = 1; depth <= MaxDepth; depth++)
         {
-            var prefixes = new Prefixes(this, depth).Of(alternatives[index]);
+            var expansion = new Prefixes(this, depth);
+            var prefixes = expansion.Of(alternatives[index]);
             if(prefixes == null)
             {
                 return false;
             }
 
             var deeper = false;
+            var inlineBlockTakesPart = expansion.ThroughInlineBlock;
             foreach(var prefix in prefixes)
             {
                 var proof = new Prover(this, prefix.Tokens).Earliest(alternatives, index);
                 if(proof.Outcome == Outcome.Succeeds)
                 {
+                    inlineBlockTakesPart |= proof.ThroughInlineBlock;
                     continue;
                 }
 
@@ -61,6 +65,7 @@ internal sealed class AlternativeShadowing
 
             if(!deeper)
             {
+                throughInlineBlock = inlineBlockTakesPart;
                 return true;
             }
         }
@@ -145,6 +150,8 @@ internal sealed class AlternativeShadowing
             this.depth = depth;
         }
 
+        internal bool ThroughInlineBlock { get; private set; }
+
         internal IReadOnlyCollection<Prefix>? Of(StormExpression alternative)
         {
             var prefixes = Expand(alternative, depth);
@@ -199,6 +206,7 @@ internal sealed class AlternativeShadowing
                     return Expand(named.Expression, budget);
 
                 case StormInlineBlockExpr block:
+                    ThroughInlineBlock = true;
                     return new HashSet<Prefix>(Expand(block.Prefix, budget)
                         .Select(prefix => prefix.Ending == Ending.Complete ? new Prefix(prefix.Tokens, Ending.Stopped) : prefix));
             }
@@ -266,7 +274,7 @@ internal sealed class AlternativeShadowing
         }
     }
 
-    private readonly record struct Proof(Outcome Outcome, int End, bool ReadPastEnd);
+    private readonly record struct Proof(Outcome Outcome, int End, bool ReadPastEnd, bool ThroughInlineBlock = false);
 
     private sealed class Prover
     {
@@ -283,18 +291,24 @@ internal sealed class AlternativeShadowing
         internal Proof Earliest(IReadOnlyList<StormExpression> alternatives, int index)
         {
             var readPastEnd = false;
+            Proof? throughInlineBlock = null;
             foreach(var alternative in alternatives.Take(index))
             {
                 var proof = Prove(alternative, 0);
-                if(proof.Outcome == Outcome.Succeeds)
+                if(proof.Outcome == Outcome.Succeeds && !proof.ThroughInlineBlock)
                 {
                     return proof;
+                }
+
+                if(proof.Outcome == Outcome.Succeeds)
+                {
+                    throughInlineBlock ??= proof;
                 }
 
                 readPastEnd |= proof.ReadPastEnd;
             }
 
-            return new Proof(Outcome.Unknown, -1, readPastEnd);
+            return throughInlineBlock ?? new Proof(Outcome.Unknown, -1, readPastEnd);
         }
 
         private Proof Prove(StormExpression expr, int position)
@@ -317,8 +331,8 @@ internal sealed class AlternativeShadowing
                     return inner.Outcome switch
                     {
                         Outcome.Succeeds => inner,
-                        Outcome.Fails => new Proof(Outcome.Succeeds, position, inner.ReadPastEnd),
-                        _ => new Proof(Outcome.Succeeds, -1, inner.ReadPastEnd),
+                        Outcome.Fails => new Proof(Outcome.Succeeds, position, inner.ReadPastEnd, inner.ThroughInlineBlock),
+                        _ => new Proof(Outcome.Succeeds, -1, inner.ReadPastEnd, inner.ThroughInlineBlock),
                     };
 
                 case StormZeroOrMoreExpr zeroOrMore:
@@ -335,7 +349,7 @@ internal sealed class AlternativeShadowing
                     }
 
                     var holds = predicate.IsNegated ? guarded.Outcome == Outcome.Fails : guarded.Outcome == Outcome.Succeeds;
-                    return new Proof(holds ? Outcome.Succeeds : Outcome.Fails, holds ? position : -1, guarded.ReadPastEnd);
+                    return new Proof(holds ? Outcome.Succeeds : Outcome.Fails, holds ? position : -1, guarded.ReadPastEnd, guarded.ThroughInlineBlock);
 
                 case StormGroupExpr group:
                     return Prove(group.Inner, position);
@@ -348,7 +362,7 @@ internal sealed class AlternativeShadowing
 
                 case StormInlineBlockExpr block:
                     var prefix = Prove(block.Prefix, position);
-                    return prefix.Outcome == Outcome.Succeeds ? prefix with { End = -1 } : prefix;
+                    return prefix.Outcome == Outcome.Succeeds ? prefix with { End = -1, ThroughInlineBlock = true } : prefix;
             }
 
             return owner.Rule(expr) is { } rule ? Rule(rule.Name, rule.Rule, position) : new Proof(Outcome.Unknown, -1, false);
@@ -373,13 +387,14 @@ internal sealed class AlternativeShadowing
         {
             var end = position;
             var readPastEnd = false;
+            var throughInlineBlock = false;
             foreach(var element in elements)
             {
                 if(end < 0)
                 {
                     if(!AlwaysSucceeds(element))
                     {
-                        return new Proof(Outcome.Unknown, -1, readPastEnd);
+                        return new Proof(Outcome.Unknown, -1, readPastEnd, throughInlineBlock);
                     }
 
                     continue;
@@ -387,44 +402,49 @@ internal sealed class AlternativeShadowing
 
                 var proof = Prove(element, end);
                 readPastEnd |= proof.ReadPastEnd;
+                throughInlineBlock |= proof.ThroughInlineBlock;
                 if(proof.Outcome != Outcome.Succeeds)
                 {
-                    return proof with { ReadPastEnd = readPastEnd };
+                    return proof with { ReadPastEnd = readPastEnd, ThroughInlineBlock = throughInlineBlock };
                 }
 
                 end = proof.End;
             }
 
-            return new Proof(Outcome.Succeeds, end, readPastEnd);
+            return new Proof(Outcome.Succeeds, end, readPastEnd, throughInlineBlock);
         }
 
         private Proof Choice(IReadOnlyList<StormExpression> alternatives, int position)
         {
             var undecided = false;
             var readPastEnd = false;
+            var throughInlineBlock = false;
             foreach(var alternative in alternatives)
             {
                 var proof = Prove(alternative, position);
                 readPastEnd |= proof.ReadPastEnd;
+                throughInlineBlock |= proof.ThroughInlineBlock;
                 if(proof.Outcome == Outcome.Succeeds)
                 {
-                    return new Proof(Outcome.Succeeds, undecided ? -1 : proof.End, readPastEnd);
+                    return new Proof(Outcome.Succeeds, undecided ? -1 : proof.End, readPastEnd, throughInlineBlock);
                 }
 
                 undecided |= proof.Outcome == Outcome.Unknown;
             }
 
-            return new Proof(undecided ? Outcome.Unknown : Outcome.Fails, -1, readPastEnd);
+            return new Proof(undecided ? Outcome.Unknown : Outcome.Fails, -1, readPastEnd, throughInlineBlock);
         }
 
         private Proof Rounds(StormExpression inner, int position, bool atLeastOnce)
         {
             var end = position;
             var readPastEnd = false;
+            var throughInlineBlock = false;
             while(true)
             {
                 var round = Prove(inner, end);
                 readPastEnd |= round.ReadPastEnd;
+                throughInlineBlock |= round.ThroughInlineBlock;
                 if(round.Outcome == Outcome.Succeeds && round.End > end)
                 {
                     end = round.End;
@@ -435,10 +455,10 @@ internal sealed class AlternativeShadowing
                 var stops = round.Outcome == Outcome.Fails || (round.Outcome == Outcome.Succeeds && round.End == end);
                 if(atLeastOnce)
                 {
-                    return new Proof(stops ? Outcome.Fails : Outcome.Unknown, -1, readPastEnd);
+                    return new Proof(stops ? Outcome.Fails : Outcome.Unknown, -1, readPastEnd, throughInlineBlock);
                 }
 
-                return new Proof(Outcome.Succeeds, stops ? end : -1, readPastEnd);
+                return new Proof(Outcome.Succeeds, stops ? end : -1, readPastEnd, throughInlineBlock);
             }
         }
 

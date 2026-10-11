@@ -246,7 +246,7 @@ public class LeftRecursionPassTests
 public class ReachabilityPassTests
 {
     [Fact]
-    public void UnreachableAlternative_EmitsWarning()
+    public void UnreachableAlternative_EmitsError()
     {
         // Second alternative "x" is unreachable because first alternative also matches "x"
         var grammar = ValidationTestHelpers.BuildGrammar(
@@ -256,7 +256,7 @@ public class ReachabilityPassTests
 
         Assert.Contains(diagnostics, d =>
             d.Id == StormDiagnosticIds.STORM_UNREACHABLE_ALTERNATIVE &&
-            d.Severity == StormDiagnosticSeverity.Warning);
+            d.Severity == StormDiagnosticSeverity.Error);
     }
 
     [Fact]
@@ -282,7 +282,7 @@ public class ReachabilityPassTests
     }
 
     [Fact]
-    public void ThirdAlternativeShadowed_EmitsWarning()
+    public void ThirdAlternativeShadowed_EmitsError()
     {
         // Three alternatives where the third is a subset of the first two combined
         var grammar = ValidationTestHelpers.BuildGrammar(
@@ -292,6 +292,7 @@ public class ReachabilityPassTests
 
         Assert.Contains(diagnostics, d =>
             d.Id == StormDiagnosticIds.STORM_UNREACHABLE_ALTERNATIVE &&
+            d.Severity == StormDiagnosticSeverity.Error &&
             d.Message.Contains("3"));
     }
 

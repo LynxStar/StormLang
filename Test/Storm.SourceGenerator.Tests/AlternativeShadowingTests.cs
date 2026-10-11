@@ -17,6 +17,8 @@ public class AlternativeShadowingTests
 
     private sealed record Case(StormExpression[] Alternatives, int[] Flagged, params StormRuleDecl[] Rules);
 
+    private sealed record InlineCase(StormExpression[] Alternatives, params StormRuleDecl[] Rules);
+
     private static readonly Dictionary<string, Case> Cases = new()
     {
         ["SharedThreeTokensThenDiverge"] = new([Tokens("A B C D"), Tokens("A B C E")], []),
@@ -92,10 +94,26 @@ public class AlternativeShadowingTests
         Assert.All(diagnostics, diagnostic =>
         {
             Assert.Equal(StormDiagnosticIds.STORM_UNREACHABLE_ALTERNATIVE, diagnostic.Id);
-            Assert.Equal(StormDiagnosticSeverity.Warning, diagnostic.Severity);
+            Assert.Equal(StormDiagnosticSeverity.Error, diagnostic.Severity);
             Assert.Equal(RuleLine, diagnostic.Line);
         });
         Assert.Equal(shape.Flagged, diagnostics.Select(ReportedAlternative));
+    }
+
+    [Theory]
+    [Trait("Tier", "1")]
+    [InlineData("AnEarlierInlineBlockSucceedsOnItsPrefix", "2:Warning")]
+    [InlineData("TheShadowedAlternativeIsAnInlineBlock", "2:Warning")]
+    [InlineData("AnEarlierRuleIsAnInlineBlock", "2:Warning")]
+    [InlineData("AnInlineBlockThatFailsIsOnlyConsulted", "3:Error")]
+    [InlineData("AnOrdinaryWinnerOutranksAnInlineBlock", "2:Warning", "3:Error")]
+    public void AFindingAnInlineBlockTakesPartInStaysAWarning_AndAnyOtherIsAnError(string name, params string[] reported)
+    {
+        var shape = InlineCases[name];
+
+        var diagnostics = ReachabilityPass.Run(Grammar([Rule("R", RuleLine, Or(shape.Alternatives)), .. InlineRules, .. shape.Rules]));
+
+        Assert.Equal(reported, diagnostics.Select(diagnostic => $"{ReportedAlternative(diagnostic)}:{diagnostic.Severity}"));
     }
 
     [Property(MaxTest = 300)]
@@ -136,6 +154,21 @@ public class AlternativeShadowingTests
             Assert.Equal(shadowed, reported);
         });
     }
+
+    private static readonly StormRuleDecl[] InlineRules =
+    [
+        Rule("P", 50, Ref("A")),
+        Rule("Arm", 51, Tokens("P B")),
+    ];
+
+    private static readonly Dictionary<string, InlineCase> InlineCases = new()
+    {
+        ["AnEarlierInlineBlockSucceedsOnItsPrefix"] = new([Inline(), Ref("A")]),
+        ["TheShadowedAlternativeIsAnInlineBlock"] = new([Ref("A"), Inline()]),
+        ["AnEarlierRuleIsAnInlineBlock"] = new([Ref("Q"), Ref("A")], Rule("Q", 52, Inline())),
+        ["AnInlineBlockThatFailsIsOnlyConsulted"] = new([Inline(), Ref("B"), Ref("B")]),
+        ["AnOrdinaryWinnerOutranksAnInlineBlock"] = new([Inline(), Ref("A"), Ref("A")]),
+    };
 
     private static int ReportedAlternative(StormDiagnostic diagnostic)
     {
@@ -313,5 +346,10 @@ public class AlternativeShadowingTests
     private static StormExpression Not(StormExpression inner)
     {
         return new StormPredicateExpr(inner, true);
+    }
+
+    private static StormExpression Inline()
+    {
+        return new StormInlineBlockExpr(Ref("P"), [new StormInlineArm(Ref("Arm"), "Armed", null)], 0, RuleLine, 1);
     }
 }
