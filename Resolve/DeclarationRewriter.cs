@@ -89,7 +89,7 @@ internal sealed class DeclarationRewriter
         var composed = Names(trait.ComposedTraits)!;
         return name == trait.Name && fields.Zip(trait.Fields, ReferenceEquals).All(same => same) && ReferenceEquals(composed, trait.ComposedTraits)
             ? trait
-            : trait with { Name = name, Fields = fields, ComposedTraits = composed };
+            : trait with { Name = name, Body = new StormReferenceExpr(name), Fields = fields, ComposedTraits = composed };
     }
 
     private StormModeAction? Action(StormModeAction? action)

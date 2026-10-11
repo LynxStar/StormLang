@@ -183,7 +183,7 @@ public sealed class StormGrammar
             var inner = mode.Declarations.Select(declaration => rewritten.TryGetValue(declaration, out var renamed) ? renamed : declaration).ToList();
             rewritten[mode] = naming.Names[mode] == mode.Name && inner.Zip(mode.Declarations, ReferenceEquals).All(same => same)
                 ? mode
-                : mode with { Name = naming.Names[mode], Declarations = inner };
+                : mode with { Name = naming.Names[mode], Body = new StormReferenceExpr(naming.Names[mode]), Declarations = inner };
         }
 
         diagnostics.AddRange(naming.Diagnostics);

@@ -76,6 +76,7 @@ public sealed class NamespacedImportTests
             ],
             Printed(grammar));
         Assert.Equal(["default", "L.Inner"], grammar.ModeNames);
+        Assert.Empty(NameResolutionPass.Run(grammar).Concat(ModeValidationPass.Run(grammar)).Concat(TraitValidationPass.Run(grammar)));
     }
 
     [Theory]

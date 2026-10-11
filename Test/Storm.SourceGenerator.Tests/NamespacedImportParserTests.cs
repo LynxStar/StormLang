@@ -24,7 +24,8 @@ public sealed class NamespacedImportParserTests
             "rule Twice = first:L.Foo second:M.Foo;\n" +
             "rule Deep = O.Wrap;\n" +
             "rule Picked = L.Pick;\n" +
-            "rule Marking = L.Mark;\n",
+            "rule Marking = L.Mark;\n" +
+            "rule Blocked = L.Block;\n",
         ["root/tokens.storm"] = "token A = \"a\";\ntoken B = \"b\";\ntoken C = \"c\";\nhidden token WS = [ ]+;\n",
         ["root/lib.storm"] =
             "import \"tokens.storm\";\n" +
@@ -35,7 +36,10 @@ public sealed class NamespacedImportParserTests
             "rule Narrow = Head A;\n" +
             "rule Pick = inline Head: { Wide as WideArm, Narrow as NarrowArm };\n" +
             "trait Marked = mark:B;\n" +
-            "rule Mark : Marked = mark:B;\n",
+            "rule Mark : Marked = mark:B;\n" +
+            "token OPEN = \"{\" => push Inner;\n" +
+            "mode Inner {\n    token WORD = [a-z]+;\n    token CLOSE = \"}\" => pop;\n}\n" +
+            "rule Block = OPEN WORD CLOSE;\n",
         ["root/outer.storm"] = "import \"inner/inner.storm\" as I;\nrule Wrap = I.Leaf;\n",
         ["root/inner/inner.storm"] = "import \"../tokens.storm\";\nrule Leaf = Foo;\nrule Foo = C;\n",
     };
@@ -51,6 +55,7 @@ public sealed class NamespacedImportParserTests
     [InlineData("Deep", "c", "DeepNode", 1)]
     [InlineData("Picked", "b a", "PickedNode", 2)]
     [InlineData("Marking", "b", "MarkingNode", 1)]
+    [InlineData("Blocked", "{abc}", "BlockedNode", 3)]
     public void AnImportedRuleParsesThroughTheRulesItsOwnFileNames(string rule, string input, string? node, int consumed)
     {
         var source = Activator.CreateInstance(Parser.Value.GetType("Storm.Runtime.SourceText")!, "test.storm", input)!;
@@ -73,9 +78,10 @@ public sealed class NamespacedImportParserTests
         Assert.Equal(
             [
                 "ParseFoo:FooNode", "ParseL_Foo:L_FooNode", "ParseStart:StartNode", "ParseTwice:TwiceNode", "ParseDeep:DeepNode",
-                "ParsePicked:PickedNode", "ParseMarking:MarkingNode", "ParseL_Foo2:L_Foo2Node", "ParseL_Bar:L_BarNode",
-                "ParseL_Head:L_HeadNode", "ParseL_Wide:L_WideNode", "ParseL_Narrow:L_NarrowNode", "ParseL_Pick:L_PickNode",
-                "ParseL_Mark:L_MarkNode", "ParseO_Wrap:O_WrapNode", "ParseO_I_Leaf:O_I_LeafNode", "ParseO_I_Foo:O_I_FooNode",
+                "ParsePicked:PickedNode", "ParseMarking:MarkingNode", "ParseBlocked:BlockedNode", "ParseL_Foo2:L_Foo2Node",
+                "ParseL_Bar:L_BarNode", "ParseL_Head:L_HeadNode", "ParseL_Wide:L_WideNode", "ParseL_Narrow:L_NarrowNode",
+                "ParseL_Pick:L_PickNode", "ParseL_Mark:L_MarkNode", "ParseL_Block:L_BlockNode", "ParseO_Wrap:O_WrapNode",
+                "ParseO_I_Leaf:O_I_LeafNode", "ParseO_I_Foo:O_I_FooNode",
             ],
             entries);
         Assert.Contains(Parser.Value.GetType("Test.Generated.L_MarkNode")!.GetInterfaces(), type => type.Name == "IL_MarkedNode");
