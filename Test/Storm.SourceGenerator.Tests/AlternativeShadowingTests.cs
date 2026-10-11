@@ -107,6 +107,8 @@ public class AlternativeShadowingTests
     [InlineData("AnEarlierRuleIsAnInlineBlock", "2:Warning")]
     [InlineData("AnInlineBlockThatFailsIsOnlyConsulted", "3:Error")]
     [InlineData("AnOrdinaryWinnerOutranksAnInlineBlock", "2:Warning", "3:Error")]
+    [InlineData("AnOrdinaryWinnerDecidedPastTheInlineBlocksPrefix", "2:Warning", "3:Error")]
+    [InlineData("AnInlineBlockLeftUndecidedBesideADecidedWinner", "2:Error")]
     public void AFindingAnInlineBlockTakesPartInStaysAWarning_AndAnyOtherIsAnError(string name, params string[] reported)
     {
         var shape = InlineCases[name];
@@ -168,6 +170,8 @@ public class AlternativeShadowingTests
         ["AnEarlierRuleIsAnInlineBlock"] = new([Ref("Q"), Ref("A")], Rule("Q", 52, Inline())),
         ["AnInlineBlockThatFailsIsOnlyConsulted"] = new([Inline(), Ref("B"), Ref("B")]),
         ["AnOrdinaryWinnerOutranksAnInlineBlock"] = new([Inline(), Ref("A"), Ref("A")]),
+        ["AnOrdinaryWinnerDecidedPastTheInlineBlocksPrefix"] = new([Inline(), Tokens("A B"), Tokens("A B")]),
+        ["AnInlineBlockLeftUndecidedBesideADecidedWinner"] = new([Or(Seq(Ref("Q"), Ref("B")), Ref("A")), Ref("A")], Rule("Q", 52, Inline())),
     };
 
     private static int ReportedAlternative(StormDiagnostic diagnostic)
