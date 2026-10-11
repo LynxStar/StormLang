@@ -95,6 +95,21 @@ public sealed class RuleLiteralTokenReuseTests
         Assert.Equal((int)Enum.Parse(Parser.Value.GetType("Test.Generated.TokenKind")!, "IDENT"), lexed[0]!.GetType().GetProperty("Kind")!.GetValue(lexed[0]));
     }
 
+    [Fact]
+    [Trait("Tier", "4")]
+    public void AnUnlabelledLiteralAPatternCarriesKeepsItsOwnProperty_BesideThePatternTokensOwn()
+    {
+        var parsed = Parse("Let", "if;x", out _, out _);
+
+        Assert.Equal(("if", "x"), (Lexeme(parsed, "__SYNTH_if"), Lexeme(parsed, "IDENT")));
+    }
+
+    private static string Lexeme(object? node, string property)
+    {
+        var token = node!.GetType().GetProperty(property)!.GetValue(node)!;
+        return (string)token.GetType().GetProperty("Lexeme")!.GetValue(token)!;
+    }
+
     private static object? Parse(string rule, string input, out IList lexed, out int position)
     {
         var source = Activator.CreateInstance(Parser.Value.GetType("Storm.Runtime.SourceText")!, "test.storm", input)!;
@@ -137,7 +152,7 @@ public sealed class RuleLiteralTokenReuseTests
         var lowering = GrammarIRLowering.Lower(ValidationTestHelpers.BuildGrammar(
             Tokens + "fragment DIGIT = [0-9];\ntoken NUMBER = DIGIT+;\n" +
             "rule Item = name:IDENT \";\";\nrule Pair = name:IDENT \",\";\nrule Word = keyword:\"if\";\nrule Name = IDENT;\n" +
-            "rule Zero = \"0\";\nrule Guarded = &\"if\" IDENT;\nrule Choice = op:(\"if\" | \"of\");\n"));
+            "rule Zero = \"0\";\nrule Guarded = &\"if\" IDENT;\nrule Choice = op:(\"if\" | \"of\");\nrule Let = \"if\" SEMI IDENT;\n"));
 
         Assert.True(lowering.Succeeded, string.Join("\n", lowering.Diagnostics.Select(d => d.Message)));
 

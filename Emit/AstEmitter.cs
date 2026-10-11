@@ -879,7 +879,7 @@ public static partial class AstEmitter
             case TokenRefIR tokenRef:
                 if(!labels.Any(l => ReferenceEquals(l.Expression, expr)))
                 {
-                    var propName = PascalCase(tokenRef.Token.Name);
+                    var propName = PascalCase(TokenName(tokenRef));
                     propName = EnsureUnique(propName, usedNames);
                     properties.Add(new PropertyInfo(propName, "Token", false, false, false, " = default;").FilledBy(tokenRef, false));
                 }
@@ -974,7 +974,7 @@ public static partial class AstEmitter
         {
             case TokenRefIR tokenRef:
                 {
-                    var name = EnsureUnique(PascalCase(tokenRef.Token.Name), usedNames);
+                    var name = EnsureUnique(PascalCase(TokenName(tokenRef)), usedNames);
                     return new PropertyInfo(name, "Token?", true, false, false, "").FilledBy(tokenRef, false);
                 }
             case RuleRefIR ruleRef:
@@ -994,7 +994,7 @@ public static partial class AstEmitter
                     var seqTokenRef = seq.Elements.OfType<TokenRefIR>().LastOrDefault();
                     if(seqTokenRef != null)
                     {
-                        var name = EnsureUnique(PascalCase(seqTokenRef.Token.Name), usedNames);
+                        var name = EnsureUnique(PascalCase(TokenName(seqTokenRef)), usedNames);
                         return new PropertyInfo(name, "Token?", true, false, false, "").FilledBy(seqTokenRef, false);
                     }
 
@@ -1033,7 +1033,7 @@ public static partial class AstEmitter
         {
             case TokenRefIR tokenRef:
                 {
-                    var name = EnsureUnique(PascalCase(tokenRef.Token.Name) + "s", usedNames);
+                    var name = EnsureUnique(PascalCase(TokenName(tokenRef)) + "s", usedNames);
                     return new PropertyInfo(name, "ImmutableArray<Token>", false, false, true, " = ImmutableArray<Token>.Empty;").FilledBy(tokenRef, true);
                 }
             case RuleRefIR ruleRef:
@@ -1055,7 +1055,7 @@ public static partial class AstEmitter
                     var seqTokenRef = seq.Elements.OfType<TokenRefIR>().LastOrDefault();
                     if(seqTokenRef != null)
                     {
-                        var name = EnsureUnique(PascalCase(seqTokenRef.Token.Name) + "s", usedNames);
+                        var name = EnsureUnique(PascalCase(TokenName(seqTokenRef)) + "s", usedNames);
                         return new PropertyInfo(name, "ImmutableArray<Token>", false, false, true, " = ImmutableArray<Token>.Empty;").FilledBy(seqTokenRef, true);
                     }
 
@@ -1091,6 +1091,12 @@ public static partial class AstEmitter
             default:
                 return new PropertyInfo(propName, "ImmutableArray<Token>", false, false, true, " = ImmutableArray<Token>.Empty;");
         }
+    }
+
+    /// <summary>An unlabelled literal a pattern token carries keeps the name its synthetic token once gave it.</summary>
+    private static string TokenName(TokenRefIR tokenRef)
+    {
+        return tokenRef.Text == null ? tokenRef.Token.Name : GrammarIRLowering.SyntheticTokenName(tokenRef.Text);
     }
 
     private static string PascalCase(string name)
