@@ -1,4 +1,5 @@
 using System.Collections.Generic;
+using System.Linq;
 using Storm.SourceGenerator.Diagnostics;
 using Storm.SourceGenerator.Frontend;
 using Storm.SourceGenerator.Resolve;
@@ -200,10 +201,11 @@ public static class ModeValidationPass
 
         // Only top-level declarations are in the default mode.
         // Declarations inside StormModeDecl are in their enclosing mode.
+        var inModes = new HashSet<StormDeclaration>(modeDecls.SelectMany(modeDecl => modeDecl.Declarations), DeclarationIdentity.Instance);
         foreach(var decl in topLevelDecls)
         {
             // Skip mode declarations themselves — they aren't tokens
-            if(decl is StormModeDecl)
+            if(decl is StormModeDecl || inModes.Contains(decl))
             {
                 continue;
             }
