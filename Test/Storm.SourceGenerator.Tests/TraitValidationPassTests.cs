@@ -1,4 +1,6 @@
 using Storm.SourceGenerator.Diagnostics;
+using Storm.SourceGenerator.Frontend;
+using Storm.SourceGenerator.Resolve;
 using Storm.SourceGenerator.Validate;
 
 namespace Storm.SourceGenerator.Tests;
@@ -9,6 +11,47 @@ namespace Storm.SourceGenerator.Tests;
 /// </summary>
 public class TraitValidationPassTests
 {
+    [Theory]
+    [Trait("Tier", "1")]
+    [InlineData(false, false)]
+    [InlineData(true, false)]
+    [InlineData(true, true)]
+    public void ALabelInsideARepetitionSatisfiesNoTraitField(bool repeated, bool oneOrMore)
+    {
+        StormExpression rest = new StormLabeledExpr("rest", new StormReferenceExpr("Elem"));
+        if(repeated)
+        {
+            var round = new StormGroupExpr(new StormSequenceExpr([new StormReferenceExpr("COMMA"), rest]));
+            rest = oneOrMore ? new StormOneOrMoreExpr(round) : new StormZeroOrMoreExpr(round);
+        }
+
+        var body = repeated
+            ? new StormSequenceExpr([new StormLabeledExpr("first", new StormReferenceExpr("Elem")), rest])
+            : new StormSequenceExpr([new StormLabeledExpr("first", new StormReferenceExpr("Elem")), new StormReferenceExpr("COMMA"), rest]);
+        var file = new StormFile(null, [],
+        [
+            new StormTokenDecl("IDENT", new StormStringLiteralExpr("x"), 0, 1, 1),
+            new StormTokenDecl("COMMA", new StormStringLiteralExpr(","), 0, 2, 1),
+            new StormRuleDecl("Elem", new StormReferenceExpr("IDENT"), 0, 3, 1),
+            new StormTraitDecl("Restful", [new StormTraitField("rest", "Elem", StormFieldCardinality.One)], [], 0, 4, 1),
+            new StormRuleDecl("List", body, 0, 5, 1, TraitBindings: ["Restful"]),
+        ]);
+        var grammar = StormGrammar.Build(new ImportResolutionResult("root", new Dictionary<string, StormFile> { ["root"] = file }, [new KeyValuePair<string, StormFile>("root", file)], [], true));
+
+        var diagnostics = TraitValidationPass.Run(grammar);
+
+        if(!repeated)
+        {
+            Assert.Empty(diagnostics);
+            return;
+        }
+
+        var diagnostic = Assert.Single(diagnostics);
+        Assert.Equal(
+            (StormDiagnosticIds.STORM_TRAIT_FIELD_MISSING, "Rule 'List' binds trait 'Restful' but is missing field 'rest'"),
+            (diagnostic.Id, diagnostic.Message));
+    }
+
     // ═══════════════════════════════════════════════════════════════════
     //  STORM0018: Unresolved trait field type
     // ═══════════════════════════════════════════════════════════════════

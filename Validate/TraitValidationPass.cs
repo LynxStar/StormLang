@@ -567,12 +567,9 @@ public static class TraitValidationPass
                 WalkForLabels(optExpr.Inner, fields);
                 break;
 
-            case StormZeroOrMoreExpr zomExpr:
-                WalkForLabels(zomExpr.Inner, fields);
-                break;
-
-            case StormOneOrMoreExpr oomExpr:
-                WalkForLabels(oomExpr.Inner, fields);
+            // A label inside a repetition names a list or no node property at all, never the field a trait reads.
+            case StormZeroOrMoreExpr:
+            case StormOneOrMoreExpr:
                 break;
 
             case StormGroupExpr groupExpr:
