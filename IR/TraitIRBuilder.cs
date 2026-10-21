@@ -177,7 +177,7 @@ public static class TraitIRBuilder
             return;
         }
 
-        foreach(var arm in inlineBlock.Arms)
+        foreach(var arm in inlineBlock.LeafArms())
         {
             var targetName = GetArmTargetRuleName(arm);
             if(targetName == null)

@@ -1,4 +1,5 @@
 using System.Collections.Generic;
+using System.Linq;
 
 namespace Storm.SourceGenerator.Frontend;
 
@@ -305,7 +306,13 @@ public sealed record StormInlineBlockExpr(
     IReadOnlyList<StormInlineArm> Arms,
     int Offset,
     int Line,
-    int Column) : StormExpression;
+    int Column) : StormExpression
+{
+    public IEnumerable<StormInlineArm> LeafArms()
+    {
+        return Arms.SelectMany(arm => arm.Expression is StormInlineBlockExpr nested ? nested.LeafArms() : [arm]);
+    }
+}
 
 // -----------------------------------------------------------------------
 //  Inline arms

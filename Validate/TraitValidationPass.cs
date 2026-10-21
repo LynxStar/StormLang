@@ -388,7 +388,7 @@ public static class TraitValidationPass
             return;
         }
 
-        foreach(var arm in inlineBlock.Arms)
+        foreach(var arm in inlineBlock.LeafArms())
         {
             // Get the target rule name from the arm's expression
             var targetName = GetArmTargetRuleName(arm);

@@ -148,6 +148,7 @@ public static partial class ParserEmitter
         {
             var inherited = level.Parent?.Locals.ToList() ?? new List<string>();
             var frames = new List<Frame>();
+            level.Captures.Clear();
             foreach(var (projection, typeName) in level.Consumers())
             {
                 var captures = projection.Slots.Where(slot => level.OwnSources.Contains(slot.Source)).ToList();
