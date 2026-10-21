@@ -18,10 +18,10 @@ public static class StormPrettyPrinter
         // Grammar declaration
         if(file.GrammarDeclaration is not null)
         {
-            _ = sb.AppendLine($"grammar {file.GrammarDeclaration.Name};");
+            _ = sb.Append($"grammar {file.GrammarDeclaration.Name};\n");
             if(file.Imports.Count > 0 || file.Declarations.Count > 0)
             {
-                _ = sb.AppendLine();
+                _ = sb.Append('\n');
             }
         }
 
@@ -30,13 +30,13 @@ public static class StormPrettyPrinter
         {
             var imp = file.Imports[i];
             _ = imp.Alias is not null
-                ? sb.AppendLine($"import \"{EscapeString(imp.Path)}\" as {imp.Alias};")
-                : sb.AppendLine($"import \"{EscapeString(imp.Path)}\";");
+                ? sb.Append($"import \"{EscapeString(imp.Path)}\" as {imp.Alias};\n")
+                : sb.Append($"import \"{EscapeString(imp.Path)}\";\n");
         }
 
         if(file.Imports.Count > 0 && file.Declarations.Count > 0)
         {
-            _ = sb.AppendLine();
+            _ = sb.Append('\n');
         }
 
         // Declarations
@@ -44,7 +44,7 @@ public static class StormPrettyPrinter
         {
             if(i > 0)
             {
-                _ = sb.AppendLine();
+                _ = sb.Append('\n');
             }
 
             _ = sb.Append(PrintDeclaration(file.Declarations[i], indent: ""));
@@ -101,7 +101,7 @@ public static class StormPrettyPrinter
             }
         }
 
-        _ = sb.AppendLine(";");
+        _ = sb.Append(";\n");
         return sb.ToString();
     }
 
@@ -111,7 +111,7 @@ public static class StormPrettyPrinter
 
         if(rule.IsMemo)
         {
-            _ = sb.AppendLine($"{indent}@memo");
+            _ = sb.Append($"{indent}@memo\n");
         }
 
         _ = sb.Append($"{indent}rule {rule.Name}");
@@ -129,7 +129,7 @@ public static class StormPrettyPrinter
     private static string PrintModeDecl(StormModeDecl mode, string indent)
     {
         var sb = new StringBuilder();
-        _ = sb.AppendLine($"{indent}mode {mode.Name} {{");
+        _ = sb.Append($"{indent}mode {mode.Name} {{\n");
 
         var innerIndent = indent + "    ";
         for(var i = 0; i < mode.Declarations.Count; i++)
@@ -137,7 +137,7 @@ public static class StormPrettyPrinter
             _ = sb.Append(PrintDeclaration(mode.Declarations[i], innerIndent));
         }
 
-        _ = sb.AppendLine($"{indent}}}");
+        _ = sb.Append($"{indent}}}\n");
         return sb.ToString();
     }
 
