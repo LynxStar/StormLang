@@ -19,7 +19,7 @@ public sealed class NodeSlotTests
     [Theory]
     [InlineData("name:IDENT Elem?", "Name=name Elem=Elem")]
     [InlineData("name:IDENT (COMMA Elem)?", "Name=name Elem=Elem")]
-    [InlineData("first:Elem (LT (COMMA rest:Elem)* GT)?", "First=first Rest=rest Elems+=rest GT=GT")]
+    [InlineData("first:Elem (LT (COMMA rest:Elem)* GT)?", "First=first Elems+=rest GT=GT")]
     [InlineData("first:Elem (COMMA Elem?)*", "First=first COMMAs+=COMMA Elems+=Elem")]
     [InlineData("first:Elem (COMMA (LT Elem GT))*", "First=first COMMAs+=COMMA Elems+=Elem")]
     [InlineData("first:Elem (COMMA more:Elem?)*", "First=first COMMAs+=COMMA More+=more")]
@@ -43,7 +43,7 @@ public sealed class NodeSlotTests
     [InlineData("LT held:(COMMA inner:Elem)?", "GT held:(COMMA Elem)?", "GT=GT Held=Elem")]
     [InlineData("inner:Elem LT held:Elem?", "GT held:(COMMA inner:Elem)?", "GT=GT Inner=inner Held=inner")]
     [InlineData("first:Elem (COMMA rest:Elem)* GT", "LT rest:Elem", "LT=LT Rest=rest")]
-    [InlineData("rest:Elem GT", "LT (COMMA rest:Elem)+", "LT=LT Rest=rest Elems+=rest")]
+    [InlineData("rest:Elem GT", "LT (COMMA rest:Elem)+", "LT=LT Elems+=rest")]
     [InlineData("LT held:(COMMA inner:Elem)?", "GT held:(COMMA other:Elem)?", "GT=GT Other=other Held=other")]
     [InlineData("LT held:(COMMA first:Elem second:Elem)?", "GT held:(COMMA first:Elem second:Elem)?", "GT=GT Group0=group Held=first")]
     public void EachUnnamedAlternativeFillsAllItsCapturesAndForwardingAliases(string firstShape, string laterShape, string filled)

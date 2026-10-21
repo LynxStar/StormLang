@@ -95,7 +95,10 @@ public sealed class GeneratedParserFidelityTests
     }
 
     [Theory]
+    [InlineData("List", "a", "a")]
+    [InlineData("List", "a,b", "a b")]
     [InlineData("List", "a,b,c", "a b c")]
+    [InlineData("Run", "a", "a")]
     [InlineData("Run", "a b c", "a b c")]
     [InlineData("Tuple", "(a,b)", "a b")]
     [InlineData("Tuple", "(a,b,c,d)", "a b c d")]
@@ -185,15 +188,6 @@ public sealed class GeneratedParserFidelityTests
 
             return node.GetType().Name + " '" + TextOf(node, input) + "'" + (tokens.Count == 0 ? "" : " [" + string.Join(" ", tokens) + "]") + string.Concat(children);
         }
-    }
-
-    [Fact]
-    public void ARoundAbandonedAfterItsReferenceParsedLeavesTheLabelledScalarOnTheLastKeptNode()
-    {
-        const string input = "a,b;,c";
-        var node = Parse(PlainParser.Value, "Stated", input, out _)!;
-
-        Assert.Equal("b", TextOf(node.GetType().GetProperty("Rest")!.GetValue(node), input));
     }
 
     [Fact]

@@ -582,9 +582,11 @@ public static partial class AstEmitter
         // First, add properties from field labels. Labels that live inside an
         // anonymous group are excluded here — they become fields on the group
         // struct (or the collapsed pure-token property) instead (Task 3.4).
+        // So is a label on a reference a repetition overwrites: the list named
+        // after its rule holds every round, where a scalar would keep the last.
         foreach(var label in alt.FieldLabels)
         {
-            if(inGroupLabels.Contains(label))
+            if(inGroupLabels.Contains(label) || (label.Expression is RuleRefIR repeated && repeatedRuleRefs.Contains(repeated)))
             {
                 continue;
             }
@@ -617,11 +619,6 @@ public static partial class AstEmitter
                     var p when !p.IsNullable && p.IsNodeType => new PropertyInfo(propName, p.TypeName + "?", true, true, false, ""),
                     var p => p,
                 }).FilledBy(label.Expression, false);
-            }
-            else if(label.Expression is RuleRefIR repeated && repeatedRuleRefs.Contains(repeated))
-            {
-                // Kept beside the list only because consumers still read it (backlog/storm.md).
-                propInfo = new PropertyInfo(propName, repeated.Rule.Name + "Node", false, true, false, " = default!;").FilledBy(repeated, false, child: false);
             }
             else
             {
