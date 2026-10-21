@@ -342,6 +342,7 @@ public sealed class GeneratedParserFidelityTests
         var emitted = compilation.Emit(stream);
 
         Assert.True(emitted.Success, string.Join("\n", emitted.Diagnostics.Where(d => d.Severity == DiagnosticSeverity.Error)));
+        Assert.Empty(emitted.Diagnostics.Where(d => d.Severity == DiagnosticSeverity.Warning).Select(d => d.ToString()));
 
         return Assembly.Load(stream.ToArray());
     }

@@ -286,7 +286,11 @@ public static partial class ParserEmitter
     private static void EmitSingleAlt(CodeWriter writer, EmissionContext context, RuleIR rule, string nodeName)
     {
         writer.WriteLine("var sp = _pos;");
-        writer.WriteLine("var ok = true;");
+        if(rule.Alternatives[0].Expression is not InlineBlockIR)
+        {
+            writer.WriteLine("var ok = true;");
+        }
+
         EmitAltBodyWithCheck(writer, context, rule, rule.Alternatives[0], nodeName, "sp", "ok");
         writer.WriteLine("return null;");
     }
