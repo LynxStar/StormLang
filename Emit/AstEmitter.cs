@@ -376,7 +376,7 @@ public static partial class AstEmitter
             {
                 // Expand inline block arms into individual sealed node classes.
                 // Do NOT emit a wrapper node for the inline block itself.
-                foreach(var arm in inlineBlock.Arms)
+                foreach(var arm in inlineBlock.LeafArms())
                 {
                     writer.WriteEmptyLine();
                     EmitInlineArmNode(writer, rule, arm);

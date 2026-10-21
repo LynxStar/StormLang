@@ -202,6 +202,11 @@ public sealed class InlineBlockIR : ExpressionIR
         PrefixLabels = prefixLabels;
         Arms = arms;
     }
+
+    public IEnumerable<InlineArmIR> LeafArms()
+    {
+        return Arms.SelectMany(arm => arm.TailExpression is InlineBlockIR nested ? nested.LeafArms() : [arm]);
+    }
 }
 
 /// <summary>

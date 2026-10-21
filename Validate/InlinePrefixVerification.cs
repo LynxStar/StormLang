@@ -151,6 +151,7 @@ public static class InlinePrefixVerification
         // If the arm's expression is a nested inline block, recursively verify it
         if(arm.Expression is StormInlineBlockExpr nestedBlock)
         {
+            VerifyNestedPrefix(arm, nestedBlock, prefixRuleName, grammar, diagnostics);
             VerifyInlineBlock(nestedBlock, grammar, diagnostics);
             return;
         }
@@ -213,6 +214,34 @@ public static class InlinePrefixVerification
             null,
             inlineBlock.Line,
             inlineBlock.Column));
+    }
+
+    private static void VerifyNestedPrefix(
+        StormInlineArm arm,
+        StormInlineBlockExpr nestedBlock,
+        string prefixRuleName,
+        StormGrammar grammar,
+        List<StormDiagnostic> diagnostics)
+    {
+        if(nestedBlock.Prefix is not StormReferenceExpr nestedRef
+            || grammar.LookupByName(nestedRef.Name) is not { Body: not StormAlternationExpr } nestedDecl
+            || grammar.LookupByName(prefixRuleName) is not { } prefixDecl)
+        {
+            return;
+        }
+
+        if(ArmStartsWithPrefixReference(nestedDecl.Body, prefixRuleName) || ArmStartsWithPrefixElements(nestedDecl.Body, prefixDecl.Body))
+        {
+            return;
+        }
+
+        diagnostics.Add(new StormDiagnostic(
+            StormDiagnosticIds.STORM_INLINE_PREFIX_MISMATCH,
+            StormDiagnosticSeverity.Error,
+            $"Arm '{arm.AlternativeName}' is a nested inline block whose prefix rule '{nestedRef.Name}' does not begin with the enclosing prefix rule '{prefixRuleName}'.",
+            null,
+            nestedBlock.Line,
+            nestedBlock.Column));
     }
 
     /// <summary>

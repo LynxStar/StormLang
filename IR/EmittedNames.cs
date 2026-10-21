@@ -59,7 +59,7 @@ internal static class EmittedNames
                     yield return (named?.AlternativeName ?? "Default") + identifier + "Node";
                     if((named?.Expression ?? alternative) is StormInlineBlockExpr block)
                     {
-                        foreach(var arm in block.Arms)
+                        foreach(var arm in LeafArms(block))
                         {
                             yield return arm.AlternativeName + identifier + "Node";
                         }
@@ -68,6 +68,11 @@ internal static class EmittedNames
 
                 break;
         }
+    }
+
+    private static IEnumerable<StormInlineArm> LeafArms(StormInlineBlockExpr block)
+    {
+        return block.Arms.SelectMany(arm => arm.Expression is StormInlineBlockExpr nested ? LeafArms(nested) : [arm]);
     }
 
     internal static string Of(IReadOnlyDictionary<string, string> names, string name)

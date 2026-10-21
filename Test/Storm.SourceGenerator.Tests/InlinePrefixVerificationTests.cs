@@ -2,6 +2,8 @@ using FsCheck;
 using FsCheck.Fluent;
 using FsCheck.Xunit;
 using Storm.SourceGenerator.Diagnostics;
+using Storm.SourceGenerator.Frontend;
+using Storm.SourceGenerator.Resolve;
 using Storm.SourceGenerator.Validate;
 
 namespace Storm.SourceGenerator.Tests;
@@ -20,6 +22,57 @@ public class InlinePrefixVerificationTests
     {
         var grammar = ValidationTestHelpers.BuildGrammar(source);
         return InlinePrefixVerification.Verify(grammar);
+    }
+
+    [Theory]
+    [Trait("Tier", "1")]
+    [InlineData("a nested prefix referencing the enclosing one", false)]
+    [InlineData("a nested prefix repeating the enclosing one's elements under other labels", false)]
+    [InlineData("a nested prefix beginning elsewhere", true)]
+    public void ANestedPrefixMustBeginWithTheEnclosingPrefix(string inner, bool refused)
+    {
+        var innerBody = inner switch
+        {
+            "a nested prefix referencing the enclosing one" => new StormSequenceExpr([labelled("a", "Outer"), labelled("b", "B")]),
+            "a nested prefix repeating the enclosing one's elements under other labels" => new StormSequenceExpr([labelled("x", "A"), labelled("b", "B")]),
+            _ => labelled("b", "B"),
+        };
+        var nested = new StormInlineBlockExpr(new StormReferenceExpr("Inner"), [new StormInlineArm(new StormReferenceExpr("Leaf"), "LeafArm", "leaf")], 0, 9, 21);
+        var file = new StormFile(null, [],
+        [
+            token("A", "a"), token("B", "b"), token("C", "c"), token("D", "d"),
+            new StormRuleDecl("Outer", labelled("a", "A"), 0, 1, 1),
+            new StormRuleDecl("Inner", innerBody, 0, 2, 1),
+            new StormRuleDecl("Leaf", new StormSequenceExpr([labelled("b", "Inner"), labelled("c", "C")]), 0, 3, 1),
+            new StormRuleDecl("Other", new StormSequenceExpr([labelled("a", "Outer"), labelled("d", "D")]), 0, 4, 1),
+            new StormRuleDecl("Parent", new StormInlineBlockExpr(new StormReferenceExpr("Outer"),
+                [new StormInlineArm(nested, "NestedArm", "inner"), new StormInlineArm(new StormReferenceExpr("Other"), "OtherArm", "other")], 0, 9, 8), 0, 9, 1),
+        ]);
+        var grammar = StormGrammar.Build(new ImportResolutionResult("root", new Dictionary<string, StormFile> { ["root"] = file }, [new KeyValuePair<string, StormFile>("root", file)], [], true));
+
+        var diagnostics = InlinePrefixVerification.Verify(grammar);
+
+        if(!refused)
+        {
+            Assert.Empty(diagnostics);
+            return;
+        }
+
+        var diagnostic = Assert.Single(diagnostics);
+        Assert.Equal(
+            (StormDiagnosticIds.STORM_INLINE_PREFIX_MISMATCH, StormDiagnosticSeverity.Error, 9, 21,
+                "Arm 'NestedArm' is a nested inline block whose prefix rule 'Inner' does not begin with the enclosing prefix rule 'Outer'."),
+            (diagnostic.Id, diagnostic.Severity, diagnostic.Line, diagnostic.Column, diagnostic.Message));
+
+        static StormExpression labelled(string label, string name)
+        {
+            return new StormLabeledExpr(label, new StormReferenceExpr(name));
+        }
+
+        static StormTokenDecl token(string name, string text)
+        {
+            return new StormTokenDecl(name, new StormStringLiteralExpr(text), 0, 1, 1);
+        }
     }
 
     // ═══════════════════════════════════════════════════════════════════

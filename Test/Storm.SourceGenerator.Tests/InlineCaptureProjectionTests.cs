@@ -1,3 +1,4 @@
+using System.Text.RegularExpressions;
 using Storm.SourceGenerator.Emit;
 using Storm.SourceGenerator.IR;
 
@@ -88,5 +89,106 @@ public sealed class InlineCaptureProjectionTests
             var sequence = new SequenceIR([firstReference, secondReference]);
             return repeated ? new ZeroOrMoreIR(sequence) : new OptionalIR(sequence);
         }
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void ANestedBlockParsesOnlyWhatItsPrefixAddsAndBuildsFlatArmNodes(bool expanded)
+    {
+        var a = new TokenIR("A", new StringLiteralIR("a"), false, 0);
+        var b = new TokenIR("B", new StringLiteralIR("b"), false, 1);
+        var c = new TokenIR("C", new StringLiteralIR("c"), false, 2);
+        var d = new TokenIR("D", new StringLiteralIR("d"), false, 3);
+        var outerA = new TokenRefIR(a);
+        var outer = new RuleIR("Outer", [new RuleAlternativeIR(null, [new FieldLabelIR("a", outerA)], outerA)]);
+        var inner = new RuleIR("Inner", [sequence(expanded ? [("x", new TokenRefIR(a)), ("b", new TokenRefIR(b))] : [("a", new RuleRefIR(outer)), ("b", new TokenRefIR(b))])]);
+        var leaf = new RuleIR("Leaf", [sequence(expanded
+            ? [("p", new TokenRefIR(a)), ("q", new TokenRefIR(b)), ("c", new TokenRefIR(c))]
+            : [("b", new RuleRefIR(inner)), ("c", new TokenRefIR(c))])]);
+        var other = new RuleIR("Other", [sequence([("a", new RuleRefIR(outer)), ("d", new TokenRefIR(d))])]);
+        var nestedPrefix = expanded ? [("x", new TokenRefIR(a)), ("b", new TokenRefIR(b))] : new (string, ExpressionIR)[] { ("a", new RuleRefIR(outer)), ("b", new TokenRefIR(b)) };
+        var leafTail = new TokenRefIR(c);
+        var nested = new InlineBlockIR(inner, nestedPrefix.Select(element => element.Item2).ToList(), nestedPrefix.Select(element => new FieldLabelIR(element.Item1, element.Item2)).ToList(),
+            [new InlineArmIR("LeafArm", "leaf", leaf, leafTail, [new FieldLabelIR("c", leafTail)])]);
+        var parsedA = new TokenRefIR(a);
+        var otherTail = new TokenRefIR(d);
+        var block = new InlineBlockIR(outer, [parsedA], [new FieldLabelIR("a", parsedA)],
+            [new InlineArmIR("NestedArm", "inner", inner, nested, []), new InlineArmIR("OtherArm", "other", other, otherTail, [new FieldLabelIR("d", otherTail)])]);
+        var parent = new RuleIR("Parent", [new RuleAlternativeIR(null, [], block)]);
+        var context = new EmissionContext("Test.Generated", "Test", new GrammarIR([a, b, c, d], [outer, inner, leaf, other, parent]), emitObsoleteShims: false);
+
+        var parser = ParserEmitter.Emit(context);
+        var ast = AstEmitter.EmitAstNodes(context);
+        var parse = parser[parser.IndexOf("ParentNode? _ParseParent()", StringComparison.Ordinal)..];
+
+        Assert.Empty(ShadowedLocals(parser));
+        _ = Assert.Single(Regex.Matches(parse, Regex.Escape("Match((int)TokenKind.A)")));
+        Assert.DoesNotContain("_ParseOuter()", parse);
+        Assert.Contains("public sealed class LeafArmParentNode : ParentNode", ast);
+        Assert.Contains("public sealed class OtherArmParentNode : ParentNode", ast);
+        Assert.DoesNotContain("NestedArmParentNode", ast);
+        if(expanded)
+        {
+            Assert.Contains("_inner1.P = _A;", parse);
+            Assert.Contains("_inner1.Q = _B;", parse);
+            Assert.DoesNotContain("_prefixNode1", parse);
+        }
+        else
+        {
+            Assert.Contains("_prefixNode1.A = _prefixNode;", parse);
+            Assert.Contains("_inner1.B = _prefixNode1;", parse);
+        }
+
+        static RuleAlternativeIR sequence((string Label, ExpressionIR Element)[] elements)
+        {
+            return new RuleAlternativeIR(null, elements.Select(element => new FieldLabelIR(element.Label, element.Element)).ToList(),
+                new SequenceIR(elements.Select(element => element.Element).ToList()));
+        }
+    }
+
+    private static List<string> ShadowedLocals(string source)
+    {
+        var declaration = new Regex(@"^(?:var|[A-Z][\w.]*(?:<.*?>)?\??)\s+(\w+)\s*=(?!=)");
+        var root = new Scope(null);
+        var current = root;
+        foreach(var line in source.Split('\n').Select(line => line.Trim()))
+        {
+            if(line == "{")
+            {
+                current = new Scope(current);
+                current.Parent!.Children.Add(current);
+            }
+            else if(line == "}")
+            {
+                current = current.Parent!;
+            }
+            else if(declaration.Match(line) is { Success: true } match)
+            {
+                _ = current.Names.Add(match.Groups[1].Value);
+            }
+        }
+
+        var shadowed = new List<string>();
+        walk(root, []);
+        return shadowed;
+
+        void walk(Scope scope, HashSet<string> enclosing)
+        {
+            shadowed.AddRange(scope.Names.Where(enclosing.Contains));
+            foreach(var child in scope.Children)
+            {
+                walk(child, [.. enclosing, .. scope.Names]);
+            }
+        }
+    }
+
+    private sealed class Scope(Scope? parent)
+    {
+        public Scope? Parent { get; } = parent;
+
+        public List<Scope> Children { get; } = [];
+
+        public HashSet<string> Names { get; } = [];
     }
 }

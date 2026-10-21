@@ -58,6 +58,14 @@ public sealed class GeneratedParserFidelityTests
         "rule Projection = inline Prefix: { relabel:Relabel as RelabelArm, other:Other as OtherArm };\n" +
         "rule Direct = head:Prefix tail:Elem;\n" +
         "rule Nominal = inline Prefix: { direct:Direct as DirectArm, other:Other as OtherArm };\n" +
+        "rule Lead = a:LT;\n" +
+        "rule Mid = a:Lead b:COMMA;\n" +
+        "rule Deep = b:Mid c:SEMI;\n" +
+        "rule Side = a:Lead d:GT;\n" +
+        "rule Layered = inline Lead: { mid:inline Mid: { deep:Deep as DeepArm } as MidArm, side:Side as SideArm };\n" +
+        "rule Spread = x:LT b:COMMA;\n" +
+        "rule Flat = p:LT q:COMMA c:SEMI;\n" +
+        "rule Unfolded = inline Lead: { spread:inline Spread: { flat:Flat as FlatArm } as SpreadArm, side:Side as SideArm };\n" +
         "@memo\nrule Captures = ordered:Ordered SEMI interleaved:Interleaved GT firstUnion:Union GT secondUnion:Union GT " +
         "firstAlias:Alias GT secondAlias:Alias GT missingAlias:Alias GT firstShared:Shared secondShared:Shared " +
         "projection:Projection GT nominal:Nominal GT other:Projection GT absent:Nominal? GT;\n" +
@@ -149,6 +157,34 @@ public sealed class GeneratedParserFidelityTests
         }
 
         Assert.Equal(("WideArmPickNode a b", "BareArmPickNode a"), (armOf("a<b>"), armOf("a<;")));
+    }
+
+    [Theory]
+    [InlineData("Layered", "<,;", "DeepArmLayeredNode '<,;' (DeepNode '<,;' [C=;] (MidNode '<,' [B=,] (LeadNode '<' [A=<])))")]
+    [InlineData("Layered", "<>", "SideArmLayeredNode '<>' (SideNode '<>' [D=>] (LeadNode '<' [A=<]))")]
+    [InlineData("Unfolded", "<,;", "FlatArmUnfoldedNode '<,;' (FlatNode '<,;' [P=< Q=, C=;])")]
+    [InlineData("Unfolded", "<>", "SideArmUnfoldedNode '<>' (SideNode '<>' [D=>] (LeadNode '<' [A=<]))")]
+    public void ANestedInlineBlockParsesEachPrefixOnce_AndBuildsTheNodesOfTheStandaloneArm(string rule, string input, string tree)
+    {
+        foreach(var (memoized, parser) in Parsers())
+        {
+            var node = Parse(parser, rule, input, out var position)!;
+            _ = node.GetType().GetMethod("SetParentLinks")!.Invoke(node, null);
+
+            Assert.Equal((memoized, input.Length, tree), (memoized, position, render(node)));
+        }
+
+        string render(object node)
+        {
+            var tokens = node.GetType().GetProperties().Where(property => property.PropertyType.Name == "Token").Select(property => property.Name + "=" + LexemeOf(property.GetValue(node))).ToList();
+            var children = ChildrenOf(node).Select(child =>
+            {
+                Assert.Same(node, Property(child!, "Parent"));
+                return " (" + render(child!) + ")";
+            });
+
+            return node.GetType().Name + " '" + TextOf(node, input) + "'" + (tokens.Count == 0 ? "" : " [" + string.Join(" ", tokens) + "]") + string.Concat(children);
+        }
     }
 
     [Fact]

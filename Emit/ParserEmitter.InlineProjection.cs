@@ -11,7 +11,7 @@ public static partial class ParserEmitter
     // Keep the target rule's capture names/types, but feed them from those parsed instances.
     private sealed record InlineArmProjection(RuleAlternativeIR Alternative, IReadOnlyList<NodeSlot> Slots, RuleRefIR? PrefixReference);
 
-    private static InlineArmProjection ProjectInlineArm(InlineBlockIR block, InlineArmIR arm)
+    private static InlineArmProjection ProjectInlineArm(InlineBlockIR block, InlineArmIR arm, Func<ExpressionIR, ExpressionIR> resolve)
     {
         var alternative = arm.TargetRule.Alternatives[0];
         var body = SequenceElements(alternative.Expression);
@@ -24,6 +24,7 @@ public static partial class ParserEmitter
         }
 
         MapExpressions(body.Skip(prefixLength).ToList(), SequenceElements(arm.TailExpression), map);
+        ResolveAll(map, resolve);
         var mapped = MapAlternative(alternative, map);
         var slots = AstEmitter.NodeSlots(arm.TargetRule, alternative, arm.TargetRule.Name + "Node")
             .Select(slot => slot with { Source = map.TryGetValue(slot.Source, out var source) ? source : slot.Source })
@@ -31,15 +32,24 @@ public static partial class ParserEmitter
         return new InlineArmProjection(mapped, slots, nominal);
     }
 
-    private static InlineArmProjection ProjectInlinePrefix(InlineBlockIR block)
+    private static InlineArmProjection ProjectInlinePrefix(InlineBlockIR block, Func<ExpressionIR, ExpressionIR> resolve)
     {
         var alternative = block.PrefixRule.Alternatives[0];
         var map = new Dictionary<ExpressionIR, ExpressionIR>();
         MapExpressions(SequenceElements(alternative.Expression), block.PrefixElements, map);
+        ResolveAll(map, resolve);
         var slots = AstEmitter.NodeSlots(block.PrefixRule, alternative, block.PrefixRule.Name + "Node")
             .Select(slot => slot with { Source = map.TryGetValue(slot.Source, out var source) ? source : slot.Source })
             .ToList();
         return new InlineArmProjection(MapAlternative(alternative, map), slots, null);
+    }
+
+    private static void ResolveAll(Dictionary<ExpressionIR, ExpressionIR> map, Func<ExpressionIR, ExpressionIR> resolve)
+    {
+        foreach(var original in map.Keys.ToList())
+        {
+            map[original] = resolve(map[original]);
+        }
     }
 
     private static IReadOnlyList<ExpressionIR> SequenceElements(ExpressionIR expression)
@@ -85,7 +95,7 @@ public static partial class ParserEmitter
         return new RuleAlternativeIR(alternative.AlternativeName, labels, expression);
     }
 
-    private static Frame MergeInlineFrames(IEnumerable<Frame> frames, HashSet<ExpressionIR> prefixSources)
+    private static Frame MergeInlineFrames(IEnumerable<Frame> frames, HashSet<ExpressionIR> prefixSources, string groupPrefix)
     {
         var merged = new Frame(null);
         var groupIndex = 0;
@@ -101,7 +111,7 @@ public static partial class ParserEmitter
                         merged.Groups[group.Key] = plans;
                     }
 
-                    plans.Add(new GroupPlan(plan.StructName, plan.StructName, "_inlineGroup" + groupIndex++, group.Key, plan.Labels));
+                    plans.Add(new GroupPlan(plan.StructName, plan.StructName, groupPrefix + groupIndex++, group.Key, plan.Labels));
                 }
             }
 
